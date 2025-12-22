@@ -314,7 +314,8 @@ Fatality.ThemeDefaults = {
 	LogoText = Color3.fromRGB(229, 229, 229),      -- Цвет текста логотипа
 	LogoStroke = Color3.fromRGB(205, 67, 218),     -- Цвет обводки логотипа
 	UsernameText = Color3.fromRGB(255, 255, 255),  -- Цвет ника пользователя
-	ExpireText = Color3.fromRGB(245, 49, 116),     -- Цвет текста подписки (expire date)
+	ExpireLabel = Color3.fromRGB(150, 150, 150),   -- Цвет надписи "expires:"
+	ExpireText = Color3.fromRGB(245, 49, 116),     -- Цвет текста подписки (LifeTime / date)
 	DropdownSelected = Color3.fromRGB(255, 106, 133), -- Цвет выбранного элемента дропдауна
 }
 
@@ -2319,6 +2320,10 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 		ScrollingFrame.CanvasSize = UDim2.fromOffset(0,UIListLayout.AbsoluteContentSize.Y + 4)
 	end)
 
+	-- Таблица для отслеживания кнопок и их состояния выбора
+	local buttonStates = {} -- { [button] = { value = v, isSelected = bool } }
+	local selectedButton = nil -- Для single-select режима
+	
 	local new_button = function()
 		local db_selected = Instance.new("TextButton")
 
@@ -2336,6 +2341,29 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 
 		return db_selected;
 	end;
+	
+	-- Функция обновления цветов всех кнопок при смене темы
+	local function updateAllButtonColors()
+		local newSelectedColor = getSelectedColor()
+		for btn, state in pairs(buttonStates) do
+			if btn and btn.Parent then
+				if state.isSelected then
+					btn.TextColor3 = newSelectedColor
+				end
+			end
+		end
+		-- Для single-select режима
+		if selectedButton and selectedButton.Parent then
+			selectedButton.TextColor3 = newSelectedColor
+		end
+	end
+	
+	-- Подписываемся на изменения темы
+	if Fatal and Fatal.ThemeChanged then
+		Fatal.ThemeChanged.Event:Connect(function()
+			updateAllButtonColors()
+		end)
+	end
 
 	local func;
 	local res = Fatality:CreateResponse({
@@ -2349,6 +2377,10 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 			Default = v;
 		end,
 		refresh = function()
+			-- Очищаем отслеживание кнопок
+			buttonStates = {}
+			selectedButton = nil
+			
 			for i,v in next , ScrollingFrame:GetChildren() do
 				if v:IsA('TextButton') then
 					v:Destroy();
@@ -2368,13 +2400,16 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 					if (typeof(Default) == 'table' and (Default[v] or table.find(Default,v))) or Default == v then
 						Selected[v] = true
 						bth.TextColor3 = getSelectedColor();
+						buttonStates[bth] = { value = v, isSelected = true }
 					else
 						bth.TextColor3 = Color3.fromRGB(255, 255, 255);
 						Selected[v] = false
+						buttonStates[bth] = { value = v, isSelected = false }
 					end
 
 					bth.MouseButton1Click:Connect(function()
 						Selected[v] = not Selected[v];
+						buttonStates[bth].isSelected = Selected[v]
 
 						if Selected[v] then
 							bth.TextColor3 = getSelectedColor();
@@ -2387,6 +2422,7 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 				else
 					if v == Default then
 						selectedmem = bth;
+						selectedButton = bth
 						Selected = v;
 
 						bth.TextColor3 = getSelectedColor();
@@ -2401,6 +2437,7 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 
 						bth.TextColor3 = getSelectedColor();
 						selectedmem = bth;
+						selectedButton = bth
 						Selected = v;
 
 						Callback(v);
@@ -4796,13 +4833,29 @@ function Fatality.new(Window: Window)
 	expire_days.Size = UDim2.new(1, -60, 0, 12)
 	expire_days.ZIndex = 4
 	expire_days.Font = Enum.Font.GothamMedium
-	expire_days.Text = string.format("<font transparency=\"0.5\">expires:</font> <font color=\"#f53174\">%s</font>", Window.Expire)
 	expire_days.TextColor3 = Color3.fromRGB(255, 255, 255)
 	expire_days.TextSize = 10.000
 	expire_days.TextStrokeTransparency = 0.700
 	expire_days.TextXAlignment = Enum.TextXAlignment.Left -- Выравнивание по левому краю
 	expire_days.RichText = true
 	Fatality:BindTheme(Fatal, expire_days, "TextColor3", "TextDim")
+	
+	-- Функция для форматирования expire текста с использованием темы
+	local function formatExpireText(expireValue)
+		local labelColor = Fatal.Theme.ExpireLabel or Color3.fromRGB(150, 150, 150)
+		local valueColor = Fatal.Theme.ExpireText or Color3.fromRGB(245, 49, 116)
+		local labelHex = string.format("#%02x%02x%02x", math.floor(labelColor.R * 255), math.floor(labelColor.G * 255), math.floor(labelColor.B * 255))
+		local valueHex = string.format("#%02x%02x%02x", math.floor(valueColor.R * 255), math.floor(valueColor.G * 255), math.floor(valueColor.B * 255))
+		return string.format("<font color=\"%s\">expires:</font> <font color=\"%s\">%s</font>", labelHex, valueHex, expireValue)
+	end
+	
+	-- Устанавливаем начальный текст
+	expire_days.Text = formatExpireText(Window.Expire)
+	
+	-- Подписываемся на изменения темы для обновления цветов expire
+	Fatal.ThemeChanged.Event:Connect(function()
+		expire_days.Text = formatExpireText(Window.Expire)
+	end)
 
 	HeaderLineShadow.Name = Fatality:RandomString()
 	HeaderLineShadow.Parent = Header
@@ -4942,7 +4995,12 @@ function Fatality.new(Window: Window)
 	end;
 
 	function Fatal:SetExpire(str: string)
-		expire_days.Text = string.format("<font transparency=\"0.5\">expires:</font> <font color=\"#f53174\">%s</font>",str)
+		Window.Expire = str
+		local labelColor = Fatal.Theme.ExpireLabel or Color3.fromRGB(150, 150, 150)
+		local valueColor = Fatal.Theme.ExpireText or Color3.fromRGB(245, 49, 116)
+		local labelHex = string.format("#%02x%02x%02x", math.floor(labelColor.R * 255), math.floor(labelColor.G * 255), math.floor(labelColor.B * 255))
+		local valueHex = string.format("#%02x%02x%02x", math.floor(valueColor.R * 255), math.floor(valueColor.G * 255), math.floor(valueColor.B * 255))
+		expire_days.Text = string.format("<font color=\"%s\">expires:</font> <font color=\"%s\">%s</font>", labelHex, valueHex, str)
 	end;
 
 	function Fatal:GetFlags()
