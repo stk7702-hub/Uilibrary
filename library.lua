@@ -4796,28 +4796,13 @@ function Fatality.new(Window: Window)
 	expire_days.Size = UDim2.new(1, -60, 0, 12)
 	expire_days.ZIndex = 4
 	expire_days.Font = Enum.Font.GothamMedium
-	
-	-- Функция для обновления текста expire с использованием темы
-	local function updateExpireText()
-		local expireColor = Fatal.Theme.ExpireText or Color3.fromRGB(245, 49, 116)
-		local hexColor = string.format("#%02x%02x%02x", math.floor(expireColor.R * 255), math.floor(expireColor.G * 255), math.floor(expireColor.B * 255))
-		expire_days.Text = string.format("<font transparency=\"0.5\">expires:</font> <font color=\"%s\">%s</font>", hexColor, Window.Expire)
-	end
-	
-	-- Устанавливаем начальный текст
-	updateExpireText()
-	
+	expire_days.Text = string.format("<font transparency=\"0.5\">expires:</font> <font color=\"#f53174\">%s</font>", Window.Expire)
 	expire_days.TextColor3 = Color3.fromRGB(255, 255, 255)
 	expire_days.TextSize = 10.000
 	expire_days.TextStrokeTransparency = 0.700
 	expire_days.TextXAlignment = Enum.TextXAlignment.Left -- Выравнивание по левому краю
 	expire_days.RichText = true
 	Fatality:BindTheme(Fatal, expire_days, "TextColor3", "TextDim")
-	
-	-- Подписываемся на изменения темы для обновления цвета expire
-	Fatal.ThemeChanged.Event:Connect(function()
-		updateExpireText()
-	end)
 
 	HeaderLineShadow.Name = Fatality:RandomString()
 	HeaderLineShadow.Parent = Header
@@ -4957,10 +4942,7 @@ function Fatality.new(Window: Window)
 	end;
 
 	function Fatal:SetExpire(str: string)
-		Window.Expire = str
-		local expireColor = Fatal.Theme.ExpireText or Color3.fromRGB(245, 49, 116)
-		local hexColor = string.format("#%02x%02x%02x", math.floor(expireColor.R * 255), math.floor(expireColor.G * 255), math.floor(expireColor.B * 255))
-		expire_days.Text = string.format("<font transparency=\"0.5\">expires:</font> <font color=\"%s\">%s</font>", hexColor, str)
+		expire_days.Text = string.format("<font transparency=\"0.5\">expires:</font> <font color=\"#f53174\">%s</font>",str)
 	end;
 
 	function Fatal:GetFlags()
