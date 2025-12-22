@@ -312,7 +312,9 @@ Fatality.ThemeDefaults = {
 	
 	-- Новые токены для разделения цветов:
 	LogoText = Color3.fromRGB(229, 229, 229),      -- Цвет текста логотипа
+	LogoStroke = Color3.fromRGB(205, 67, 218),     -- Цвет обводки логотипа
 	UsernameText = Color3.fromRGB(255, 255, 255),  -- Цвет ника пользователя
+	DropdownSelected = Color3.fromRGB(255, 106, 133), -- Цвет выбранного элемента дропдауна
 }
 
 local function deepMerge(dst, src)
@@ -2193,8 +2195,17 @@ end;
 
 function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boolean}, Multiplier: boolean, AutoUpdate: boolean,Callback: (data: any) -> any)
 	local Window = Fatality:GetWindowFromElement(Parent);
+	local Fatal = Fatality.WindowFatalMap[Window];
 	local Data = {};
 	local Selected = (Multiplier and {}) or nil;
+	
+	-- Функция для получения цвета выбранного элемента
+	local function getSelectedColor()
+		if Fatal and Fatal.Theme and Fatal.Theme.DropdownSelected then
+			return Fatal.Theme.DropdownSelected
+		end
+		return Fatality.Colors.Main
+	end
 
 	local DropdownItemFrame = Instance.new("Frame")
 	local UICorner = Instance.new("UICorner")
@@ -2318,7 +2329,7 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 		db_selected.Size = UDim2.new(1, 0, 0, 10)
 		db_selected.ZIndex = 110
 		db_selected.FontFace = Fatality.FontSemiBold
-		db_selected.TextColor3 = Fatality.Colors.Main
+		db_selected.TextColor3 = getSelectedColor() -- Используем функцию для получения цвета
 		db_selected.TextSize = 12.000
 		db_selected.TextXAlignment = Enum.TextXAlignment.Left
 
@@ -2355,7 +2366,7 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 				if Multiplier then
 					if (typeof(Default) == 'table' and (Default[v] or table.find(Default,v))) or Default == v then
 						Selected[v] = true
-						bth.TextColor3 = Fatality.Colors.Main;
+						bth.TextColor3 = getSelectedColor();
 					else
 						bth.TextColor3 = Color3.fromRGB(255, 255, 255);
 						Selected[v] = false
@@ -2365,7 +2376,7 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 						Selected[v] = not Selected[v];
 
 						if Selected[v] then
-							bth.TextColor3 = Fatality.Colors.Main;
+							bth.TextColor3 = getSelectedColor();
 						else
 							bth.TextColor3 = Color3.fromRGB(255, 255, 255);
 						end;
@@ -2377,7 +2388,7 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 						selectedmem = bth;
 						Selected = v;
 
-						bth.TextColor3 = Fatality.Colors.Main;
+						bth.TextColor3 = getSelectedColor();
 					else
 						bth.TextColor3 = Color3.fromRGB(255, 255, 255);
 					end;
@@ -2387,7 +2398,7 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 							selectedmem.TextColor3 = Color3.fromRGB(255, 255, 255);
 						end;
 
-						bth.TextColor3 = Fatality.Colors.Main;
+						bth.TextColor3 = getSelectedColor();
 						selectedmem = bth;
 						Selected = v;
 
@@ -4651,6 +4662,7 @@ function Fatality.new(Window: Window)
 	-- Выравнивание по центру контейнера (который равен ширине сайдбара)
 	HeaderText.TextXAlignment = Enum.TextXAlignment.Center 
 	Fatality:BindTheme(Fatal, HeaderText, "TextColor3", "LogoText")
+	Fatality:BindTheme(Fatal, HeaderText, "TextStrokeColor3", "LogoStroke")
 
 	-- Sidebar (left)
 	local Sidebar = Instance.new("Frame")
