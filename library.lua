@@ -4815,7 +4815,7 @@ function Fatality.new(Window: Window)
 	Fatality:BindTheme(Fatal, expire_days, "TextColor3", "TextDim")
 	
 	-- Подписываемся на изменения темы для обновления цвета expire
-	Fatal.ThemeChanged:Connect(function()
+	Fatal.ThemeChanged.Event:Connect(function()
 		updateExpireText()
 	end)
 
