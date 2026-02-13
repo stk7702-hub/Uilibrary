@@ -281,6 +281,7 @@ local Fatality = {};
 
 Fatality.Ascii = "qwertyuiopasdfghjklzxcvbnmQWRTYUIOPASDFGHJKLZXCVBNM";
 Fatality.GLOBAL_ENVIRONMENT = {};
+Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING = false;
 Fatality.Windows = {};
 Fatality.WindowFatalMap = {}; -- Маппинг окна к Fatal объекту
 Fatality.FontSemiBold = Font.new('rbxasset://fonts/families/GothamSSm.json',Enum.FontWeight.SemiBold,Enum.FontStyle.Normal);
@@ -2182,6 +2183,157 @@ function Fatality:AddDragBlacklist(Frame: Frame)
 	end);
 end;
 
+-- ────────────────────────────────────────────────────────────
+-- Утилиты нормализации биндов
+-- ────────────────────────────────────────────────────────────
+
+function Fatality:NormalizeBind(b)
+	if typeof(b) == "EnumItem" and b.EnumType == Enum.KeyCode then
+		return { kind = "KeyCode", value = b }
+	end
+	if typeof(b) == "string" then
+		if b == "MouseLeft" then
+			return { kind = "Mouse", value = "MouseLeft" }
+		elseif b == "MouseRight" then
+			return { kind = "Mouse", value = "MouseRight" }
+		end
+		local ok, kc = pcall(function() return Enum.KeyCode[b] end)
+		if ok and kc then
+			return { kind = "KeyCode", value = kc }
+		end
+	end
+	return nil
+end
+
+function Fatality:InputMatchesBind(input, bind)
+	if not bind then return false end
+	if bind.kind == "KeyCode" then
+		return input.KeyCode == bind.value
+	end
+	if bind.kind == "Mouse" then
+		if bind.value == "MouseLeft" then
+			return input.UserInputType == Enum.UserInputType.MouseButton1
+		elseif bind.value == "MouseRight" then
+			return input.UserInputType == Enum.UserInputType.MouseButton2
+		end
+	end
+	return false
+end
+
+function Fatality:BindToString(rawBind)
+	if not rawBind then return "None" end
+	if typeof(rawBind) == "EnumItem" then return rawBind.Name end
+	if typeof(rawBind) == "string" then return rawBind end
+	return "None"
+end
+
+function Fatality:StringToBind(str)
+	if not str or str == "None" or str == "" then return nil end
+	if str == "MouseLeft" or str == "MouseRight" then return str end
+	local ok, kc = pcall(function() return Enum.KeyCode[str] end)
+	if ok and kc then return kc end
+	return str -- возвращаем как строку, NormalizeBind разберётся
+end
+
+-- ────────────────────────────────────────────────────────────
+-- KeybindManager — один InputBegan + один InputEnded на окно
+-- ────────────────────────────────────────────────────────────
+
+function Fatality:CreateKeybindManager()
+	local manager = {
+		Entries = {},
+		_nextId = 0,
+		_connections = {},
+	}
+
+	function manager:Register(entry)
+		self._nextId = self._nextId + 1
+		local id = self._nextId
+		self.Entries[id] = entry
+		return id
+	end
+
+	function manager:Unregister(id)
+		self.Entries[id] = nil
+	end
+
+	function manager:Destroy()
+		for _, conn in ipairs(self._connections) do
+			if conn.Connected then
+				conn:Disconnect()
+			end
+		end
+		table.clear(self._connections)
+		table.clear(self.Entries)
+	end
+
+	-- Центральный диспатч InputBegan
+	local connBegan = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed then return end
+		if UserInputService:GetFocusedTextBox() then return end
+		if Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING then return end
+
+		for id, entry in pairs(manager.Entries) do
+			if not entry.OnTriggered then continue end
+			if entry.IsEnabled and not entry.IsEnabled() then continue end
+
+			local mode = entry.GetMode()
+			if mode == "Always" then continue end
+
+			local rawBind = entry.GetBind()
+			if not rawBind then continue end
+
+			local normalized = Fatality:NormalizeBind(rawBind)
+			if not normalized then continue end
+			if not Fatality:InputMatchesBind(input, normalized) then continue end
+
+			if mode == "Click" then
+				task.spawn(entry.OnTriggered, true, input, mode)
+
+			elseif mode == "Toggle" then
+				local newState = not entry.GetActive()
+				entry.SetActive(newState)
+				task.spawn(entry.OnTriggered, newState, input, mode)
+
+			elseif mode == "Hold" then
+				entry.SetActive(true)
+				task.spawn(entry.OnTriggered, true, input, mode)
+			end
+		end
+	end)
+
+	-- Центральный диспатч InputEnded
+	local connEnded = UserInputService.InputEnded:Connect(function(input, gameProcessed)
+		-- IS_REBINDING — единственный жёсткий стоп.
+		-- gameProcessed и FocusedTextBox НЕ блокируют Ended,
+		-- иначе Hold залипнет если игрок кликнул в чат пока держал кнопку.
+		if Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING then return end
+
+		for id, entry in pairs(manager.Entries) do
+			if not entry.OnTriggered then continue end
+			if entry.IsEnabled and not entry.IsEnabled() then continue end
+
+			local mode = entry.GetMode()
+			if mode ~= "Hold" then continue end
+			if not entry.GetActive() then continue end
+
+			local rawBind = entry.GetBind()
+			if not rawBind then continue end
+
+			local normalized = Fatality:NormalizeBind(rawBind)
+			if not normalized then continue end
+			if not Fatality:InputMatchesBind(input, normalized) then continue end
+
+			entry.SetActive(false)
+			task.spawn(entry.OnTriggered, false, input, mode)
+		end
+	end)
+
+	manager._connections = { connBegan, connEnded }
+
+	return manager
+end
+
 function Fatality:ProtectText(Label: TextLabel,Text: string)
 	Label.RichText = true;
 
@@ -2702,79 +2854,6 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		if Config.Flag then
 			Fatality.WindowFlags[FatalWindow][Config.Flag.."Toggle"] = Respons;
 		end;
-
-		-- Переопределяем Option.AddKeybind для работы с Toggle
-		if Config.Option and Respons.Option then
-			local originalAddKeybind = Respons.Option.AddKeybind
-			Respons.Option.AddKeybind = function(keybindConfig)
-				local kb = originalAddKeybind(keybindConfig)
-				
-				-- Создаем соединение для переключения Toggle при нажатии клавиши
-				UserInputService.InputBegan:Connect(function(input, gameProcessed)
-					if gameProcessed then return end
-					
-					local boundKey = kb:GetValue()
-					if boundKey then
-						local keyMatches = false
-						
-						if typeof(boundKey) == "EnumItem" then
-							keyMatches = input.KeyCode == boundKey
-						elseif typeof(boundKey) == "string" then
-							if boundKey == "MouseLeft" then
-								keyMatches = input.UserInputType == Enum.UserInputType.MouseButton1
-							elseif boundKey == "MouseRight" then
-								keyMatches = input.UserInputType == Enum.UserInputType.MouseButton2
-							else
-								local ok, kc = pcall(function() return Enum.KeyCode[boundKey] end)
-								if ok and kc then
-									keyMatches = input.KeyCode == kc
-								end
-							end
-						end
-						
-						if keyMatches then
-							-- Переключаем через SetValue чтобы обновить визуал и логику
-							Respons:SetValue(not Respons:GetValue())
-						end
-					end
-				end)
-				
-				return kb
-			end
-		end
-
-		-- Добавляем метод для связывания с Keybind (старый способ, оставляем для совместимости)
-		Respons.BindToKeybind = function(keybindFlag)
-			-- Подписываемся на нажатие клавиши
-			UserInputService.InputBegan:Connect(function(input, gameProcessed)
-				if gameProcessed then return end
-				
-				local keybindElement = Fatality.WindowFlags[FatalWindow][keybindFlag]
-				if keybindElement then
-					local boundKey = keybindElement:GetValue()
-					if boundKey then
-						local keyMatches = false
-						
-						if typeof(boundKey) == "EnumItem" then
-							keyMatches = input.KeyCode == boundKey
-						elseif typeof(boundKey) == "string" then
-							if boundKey == "MouseLeft" then
-								keyMatches = input.UserInputType == Enum.UserInputType.MouseButton1
-							elseif boundKey == "MouseRight" then
-								keyMatches = input.UserInputType == Enum.UserInputType.MouseButton2
-							else
-								keyMatches = input.KeyCode.Name == boundKey
-							end
-						end
-						
-						if keyMatches then
-							-- Переключаем через SetValue чтобы обновить визуал
-							Respons:SetValue(not Respons:GetValue())
-						end
-					end
-				end
-			end)
-		end
 
 		return Respons;
 	end;
@@ -3568,78 +3647,81 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		return Respons;
 	end;
 	
-	function elements:AddKeybind(Config: Keybind)
-		Config = Config or {};
-		Config.Name = Config.Name or "Keybind";
-		Config.Option = Config.Option or false;
-		Config.Default = Config.Default or nil;
-		Config.Callback = Config.Callback or function(any) end;
+	function elements:AddKeybind(Config)
+		Config = Config or {}
+		Config.Name = Config.Name or "Keybind"
+		Config.Option = Config.Option or false
+		Config.Default = Config.Default or nil
+		Config.Mode = Config.Mode or "Click"
+		Config.Callback = Config.Callback or function() end
+		Config.OnTriggered = Config.OnTriggered or nil
+		Config.Flag = Config.Flag or nil
+
+		local ModeLabels = {
+			Click  = "CLK",
+			Toggle = "TGL",
+			Hold   = "HLD",
+			Always = "ALW",
+		}
+		local ModeOrder = { "Click", "Toggle", "Hold", "Always" }
+		local ModeColors = {
+			Click  = Color3.fromRGB(200, 200, 200),
+			Toggle = Color3.fromRGB(130, 200, 255),
+			Hold   = Color3.fromRGB(255, 200, 100),
+			Always = Color3.fromRGB(140, 255, 140),
+		}
 
 		local Keys = {
-			One = '1',
-			Two = '2',
-			Three = '3',
-			Four = '4',
-			Five = '5',
-			Six = '6',
-			Seven = '7',
-			Eight = '8',
-			Nine = '9',
-			Zero = '0',
-			['Minus'] = "-",
-			['Plus'] = "+",
-			BackSlash = "\\",
-			Slash = "/",
-			Period = '.',
-			Semicolon = ';',
-			Colon = ":",
-			LeftControl = "LCtrl",
-			RightControl = "RCtrl",
-			LeftShift = "LShift",
-			RightShift = "RShift",
-			Return = "Enter",
-			LeftBracket = "[",
-			RightBracket = "]",
-			Quote = "'",
-			Comma = ",",
-			Equals = "=",
-			LeftSuper = "Super",
-			RightSuper = "Super"
-		};
+			One = '1', Two = '2', Three = '3', Four = '4', Five = '5',
+			Six = '6', Seven = '7', Eight = '8', Nine = '9', Zero = '0',
+			['Minus'] = "-", ['Plus'] = "+",
+			BackSlash = "\\", Slash = "/", Period = '.', Semicolon = ';',
+			Colon = ":", LeftControl = "LCtrl", RightControl = "RCtrl",
+			LeftShift = "LShift", RightShift = "RShift", Return = "Enter",
+			LeftBracket = "[", RightBracket = "]", Quote = "'", Comma = ",",
+			Equals = "=", LeftSuper = "Super", RightSuper = "Super"
+		}
 
 		local GetItem = function(item)
 			if item then
 				if typeof(item) == 'EnumItem' then
-					return Keys[item.Name] or item.Name;
+					return Keys[item.Name] or item.Name
 				else
-					return Keys[tostring(item)] or tostring(item);
-				end;
+					return Keys[tostring(item)] or tostring(item)
+				end
 			else
-				return 'None';
-			end;
-		end;
+				return 'None'
+			end
+		end
 
+		-- Состояние
+		local Active = (Config.Mode == "Always")
+		local CurrentMode = Config.Mode
+		local IsBinding = false
+
+		-- UI
 		local Keybind = Instance.new("Frame")
 		local Keybind_Name = Instance.new("TextLabel")
 		local ValueFrame = Instance.new("Frame")
 		local UICorner = Instance.new("UICorner")
 		local OptionButton = Instance.new("ImageButton")
 		local ValueText = Instance.new("TextLabel")
+		local ModeLabel = Instance.new("TextButton")
+		local ModeCorner = Instance.new("UICorner")
 
 		if SearchAPI then
-			SearchAPI.Memory(Config.Name);
-		end;
+			SearchAPI.Memory(Config.Name)
+		end
 
 		Keybind.Name = Fatality:RandomString()
 		Keybind.Parent = Parent
 		Keybind.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-		Keybind.BackgroundTransparency = 1.000
-		Keybind.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Keybind.BackgroundTransparency = 1
 		Keybind.BorderSizePixel = 0
 		Keybind.Size = UDim2.new(1, -25, 0, 17)
 		Keybind.AutomaticSize = Enum.AutomaticSize.Y
 		Keybind.ZIndex = ZIndex + 1
-		Fatality:AddDragBlacklist(Keybind);
+		Fatality:AddDragBlacklist(Keybind)
 
 		local RightContainer = Instance.new("Frame")
 		RightContainer.Name = Fatality:RandomString()
@@ -3647,34 +3729,48 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		RightContainer.AnchorPoint = Vector2.new(1, 0)
 		RightContainer.BackgroundTransparency = 1
 		RightContainer.Position = UDim2.new(1, 0, 0, 0)
-		RightContainer.Size = UDim2.new(0, 100, 0, 17)
+		RightContainer.Size = UDim2.new(0, 120, 0, 17)
 
 		Keybind_Name.Name = Fatality:RandomString()
 		Keybind_Name.Parent = Keybind
-		Keybind_Name.AnchorPoint = Vector2.new(0, 0)
-		Keybind_Name.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-		Keybind_Name.BackgroundTransparency = 1.000
-		Keybind_Name.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Keybind_Name.BackgroundTransparency = 1
 		Keybind_Name.BorderSizePixel = 0
 		Keybind_Name.Position = UDim2.new(0, 0, 0, 0)
-		Keybind_Name.Size = UDim2.new(1, -105, 0, 17)
+		Keybind_Name.Size = UDim2.new(1, -125, 0, 17)
 		Keybind_Name.AutomaticSize = Enum.AutomaticSize.Y
 		Keybind_Name.ZIndex = ZIndex + 2
 		Keybind_Name.FontFace = Fatality.FontSemiBold
-		Keybind_Name.Text = Config.Name
 		Keybind_Name.TextColor3 = Color3.fromRGB(255, 255, 255)
-		Keybind_Name.TextSize = 13.000
-		Keybind_Name.TextTransparency = 0.200
+		Keybind_Name.TextSize = 13
+		Keybind_Name.TextTransparency = 0.2
 		Keybind_Name.TextXAlignment = Enum.TextXAlignment.Left
 		Keybind_Name.TextYAlignment = Enum.TextYAlignment.Top
 		Keybind_Name.TextWrapped = true
-		Fatality:ProtectText(Keybind_Name,Config.Name);
+		Fatality:ProtectText(Keybind_Name, Config.Name)
+
+		-- Метка режима
+		ModeLabel.Name = Fatality:RandomString()
+		ModeLabel.Parent = RightContainer
+		ModeLabel.AnchorPoint = Vector2.new(1, 0)
+		ModeLabel.BackgroundColor3 = Fatality.Colors.Black
+		ModeLabel.BackgroundTransparency = 0.3
+		ModeLabel.BorderSizePixel = 0
+		ModeLabel.Position = UDim2.new(1, -82, 0, 1)
+		ModeLabel.Size = UDim2.new(0, 30, 0, 14)
+		ModeLabel.ZIndex = ZIndex + 3
+		ModeLabel.FontFace = Fatality.FontSemiBold
+		ModeLabel.Text = ModeLabels[CurrentMode]
+		ModeLabel.TextColor3 = ModeColors[CurrentMode]
+		ModeLabel.TextSize = 8
+		ModeLabel.AutoButtonColor = false
+
+		ModeCorner.CornerRadius = UDim.new(0, 2)
+		ModeCorner.Parent = ModeLabel
 
 		ValueFrame.Name = Fatality:RandomString()
 		ValueFrame.Parent = RightContainer
 		ValueFrame.AnchorPoint = Vector2.new(1, 0)
 		ValueFrame.BackgroundColor3 = Fatality.Colors.Black
-		ValueFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
 		ValueFrame.BorderSizePixel = 0
 		ValueFrame.Position = UDim2.new(1, -3, 0, 1)
 		ValueFrame.Size = UDim2.new(0, 75, 0, 14)
@@ -3686,154 +3782,239 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		OptionButton.Name = Fatality:RandomString()
 		OptionButton.Parent = ValueFrame
 		OptionButton.AnchorPoint = Vector2.new(0, 0.5)
-		OptionButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-		OptionButton.BackgroundTransparency = 1.000
-		OptionButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		OptionButton.BackgroundTransparency = 1
 		OptionButton.BorderSizePixel = 0
 		OptionButton.Position = UDim2.new(0, -20, 0.5, 0)
 		OptionButton.Size = UDim2.new(0, 13, 0, 13)
 		OptionButton.SizeConstraint = Enum.SizeConstraint.RelativeYY
 		OptionButton.Image = "http://www.roblox.com/asset/?id=14007344336"
-		OptionButton.ImageTransparency = 0.600
-		OptionButton.Visible = Config.Option or false;
+		OptionButton.ImageTransparency = 0.6
+		OptionButton.Visible = Config.Option or false
 
 		ValueText.Name = Fatality:RandomString()
 		ValueText.Parent = ValueFrame
-		ValueText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-		ValueText.BackgroundTransparency = 1.000
-		ValueText.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ValueText.BackgroundTransparency = 1
 		ValueText.BorderSizePixel = 0
 		ValueText.Size = UDim2.new(1, 0, 1, 0)
 		ValueText.ZIndex = ZIndex + 3
 		ValueText.FontFace = Fatality.FontSemiBold
 		ValueText.Text = GetItem(Config.Default)
 		ValueText.TextColor3 = Color3.fromRGB(255, 255, 255)
-		ValueText.TextSize = 9.000
-		ValueText.TextStrokeTransparency = 0.850
-		ValueText.TextTransparency = 0.400
+		ValueText.TextSize = 9
+		ValueText.TextStrokeTransparency = 0.85
+		ValueText.TextTransparency = 0.4
 
-		local IsBinding = false;
-		Fatality:NewInput(ValueFrame,function()
-			if IsBinding then
-				return;
-			end;
+		-- Обновление UI метки
+		local function updateModeUI()
+			ModeLabel.Text = ModeLabels[CurrentMode]
+			Fatality:CreateAnimation(ModeLabel, 0.25, {
+				TextColor3 = ModeColors[CurrentMode]
+			})
+		end
 
-			ValueText.Text = "...";
+		-- Смена режима
+		local function setModeInternal(newMode)
+			if not table.find(ModeOrder, newMode) then return end
+			local oldMode = CurrentMode
+			if oldMode == newMode then return end
 
-			local Selected = nil;
-			while not Selected do
-				local Key = UserInputService.InputBegan:Wait();
+			CurrentMode = newMode
+			updateModeUI()
 
-				if Key.KeyCode ~= Enum.KeyCode.Unknown then
-					Selected = Key.KeyCode;
-				else
-					if Key.UserInputType == Enum.UserInputType.MouseButton1 then
-						Selected = "MouseLeft";
-					elseif Key.UserInputType == Enum.UserInputType.MouseButton2 then
-						Selected = "MouseRight";
-					end;
-				end;
-			end;
-
-			Config.Default = Selected;
-
-			ValueText.Text = GetItem(Selected);
-
-			IsBinding = false;
-
-			local keyName = typeof(Selected) == "string" and Selected or Selected.Name;
-			Config.Callback(keyName);
-			
-			-- Специальная обработка для Keybind скрытия меню
-			-- Если Keybind имеет специальный флаг "ToggleMenu", он будет использоваться для скрытия/показа меню
-			if Config.Flag == "ToggleMenu" or (Config.Name:lower():find("toggle") and Config.Name:lower():find("menu")) then
-				local FatalWindow = Fatality:GetWindowFromElement(Keybind);
-				if FatalWindow then
-					-- Получаем Fatal объект через глобальную таблицу
-					local fatalObj = Fatality.WindowFatalMap[FatalWindow]
-					if fatalObj then
-						-- Устанавливаем новый бинд для скрытия/показа меню
-						pcall(function()
-							if typeof(Selected) == "EnumItem" and Selected.EnumType == Enum.KeyCode then
-								fatalObj:SetToggleKeybind(Selected)
-							elseif typeof(Selected) == "string" then
-								fatalObj:SetToggleKeybind(Selected)
-							end
-						end)
-					end
+			if newMode == "Always" then
+				Active = true
+				if Config.OnTriggered then
+					task.spawn(Config.OnTriggered, true, nil, newMode)
+				end
+			elseif oldMode == "Always" then
+				Active = false
+				if Config.OnTriggered then
+					task.spawn(Config.OnTriggered, false, nil, "Always")
+				end
+			elseif oldMode == "Hold" and Active then
+				Active = false
+				if Config.OnTriggered then
+					task.spawn(Config.OnTriggered, false, nil, newMode)
 				end
 			end
-		end);
+		end
 
+		local function cycleMode()
+			local currentIdx = table.find(ModeOrder, CurrentMode) or 1
+			local nextIdx = (currentIdx % #ModeOrder) + 1
+			setModeInternal(ModeOrder[nextIdx])
+		end
+
+		ModeLabel.MouseButton1Click:Connect(cycleMode)
+
+		Fatality:CreateHover(ModeLabel, function(bool)
+			if bool then
+				Fatality:CreateAnimation(ModeLabel, 0.25, { BackgroundTransparency = 0.1 })
+			else
+				Fatality:CreateAnimation(ModeLabel, 0.25, { BackgroundTransparency = 0.3 })
+			end
+		end)
+
+		-- Менеджер
+		local Fatal = Fatality.WindowFatalMap[FatalWindow]
+		local kbManager = Fatal and Fatal.KeybindManager
+
+		local managerId
+		if kbManager and Config.OnTriggered then
+			managerId = kbManager:Register({
+				GetBind = function()
+					return Config.Default
+				end,
+				GetMode = function()
+					return CurrentMode
+				end,
+				GetActive = function()
+					return Active
+				end,
+				SetActive = function(val)
+					Active = val
+				end,
+				OnTriggered = function(active, input, mode)
+					task.spawn(Config.OnTriggered, active, input, mode)
+				end,
+				IsEnabled = function()
+					-- НЕ зависит от видимости UI — бинды работают всегда
+					return not IsBinding
+				end,
+			})
+		end
+
+		-- Автоочистка при уничтожении элемента
+		Keybind.Destroying:Connect(function()
+			-- Сброс ребинда если элемент уничтожен в процессе
+			if IsBinding then
+				Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING = false
+				IsBinding = false
+			end
+			if kbManager and managerId then
+				kbManager:Unregister(managerId)
+				managerId = nil
+			end
+		end)
+
+		-- Ребинд
+		Fatality:NewInput(ValueFrame, function()
+			if IsBinding then return end
+			IsBinding = true
+			Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING = true
+			ValueText.Text = "..."
+
+			local Selected
+			local ok, err = pcall(function()
+				while not Selected do
+					local Key = UserInputService.InputBegan:Wait()
+					if Key.KeyCode ~= Enum.KeyCode.Unknown then
+						Selected = Key.KeyCode
+					elseif Key.UserInputType == Enum.UserInputType.MouseButton1 then
+						Selected = "MouseLeft"
+					elseif Key.UserInputType == Enum.UserInputType.MouseButton2 then
+						Selected = "MouseRight"
+					end
+				end
+			end)
+
+			-- FINALLY: гарантированный сброс, даже при ошибке/уничтожении
+			Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING = false
+			IsBinding = false
+
+			if ok and Selected then
+				Config.Default = Selected
+				ValueText.Text = GetItem(Selected)
+				Config.Callback(Fatality:BindToString(Selected))
+			else
+				-- Откат текста при ошибке/отмене
+				ValueText.Text = GetItem(Config.Default)
+			end
+		end)
+
+		-- Видимость (анимации секции)
 		local OpcToggle = function(value)
 			if value then
-				Fatality:CreateAnimation(Keybind_Name,0.45,{
-					TextTransparency = 0.2,
+				Fatality:CreateAnimation(Keybind_Name, 0.45, { TextTransparency = 0.2 })
+				Fatality:CreateAnimation(ValueFrame, 0.45, { BackgroundTransparency = 0 })
+				Fatality:CreateAnimation(ValueText, 0.45, {
+					TextStrokeTransparency = 0.85,
+					TextTransparency = 0.4
 				})
-
-				Fatality:CreateAnimation(ValueFrame,0.45,{
-					BackgroundTransparency = 0
+				Fatality:CreateAnimation(OptionButton, 0.45, {
+					ImageTransparency = (Config.Option and 0.6) or 1
 				})
-
-				Fatality:CreateAnimation(ValueText,0.45,{
-					TextStrokeTransparency = 0.850,
-					TextTransparency = 0.400
-				})
-
-				Fatality:CreateAnimation(OptionButton,0.45,{
-					ImageTransparency = (Config.Option and 0.6) or 1,
+				Fatality:CreateAnimation(ModeLabel, 0.45, {
+					BackgroundTransparency = 0.3,
+					TextTransparency = 0
 				})
 			else
-				Fatality:CreateAnimation(Keybind_Name,0.45,{
-					TextTransparency = 1,
-				})
-
-				Fatality:CreateAnimation(ValueFrame,0.45,{
-					BackgroundTransparency = 1
-				})
-
-				Fatality:CreateAnimation(ValueText,0.45,{
+				Fatality:CreateAnimation(Keybind_Name, 0.45, { TextTransparency = 1 })
+				Fatality:CreateAnimation(ValueFrame, 0.45, { BackgroundTransparency = 1 })
+				Fatality:CreateAnimation(ValueText, 0.45, {
 					TextStrokeTransparency = 1,
 					TextTransparency = 1
 				})
-
-				Fatality:CreateAnimation(OptionButton,0.45,{
-					ImageTransparency = 1,
+				Fatality:CreateAnimation(OptionButton, 0.45, { ImageTransparency = 1 })
+				Fatality:CreateAnimation(ModeLabel, 0.45, {
+					BackgroundTransparency = 1,
+					TextTransparency = 1
 				})
-			end;
-		end;
+			end
+		end
 
-		OpcToggle(Event:GetAttribute('V'));
+		OpcToggle(Event:GetAttribute('V'))
+
+		-- Always: триггерим при старте
+		if CurrentMode == "Always" and Config.OnTriggered then
+			task.defer(Config.OnTriggered, true, nil, "Always")
+		end
 
 		local Respons = Fatality:CreateResponse({
 			Rename = function(new_name)
 				Keybind_Name.Text = new_name
-				Fatality:ProtectText(Keybind_Name,new_name);
+				Fatality:ProtectText(Keybind_Name, new_name)
 			end,
 			GetValue = function()
-				return Config.Default;
+				return Config.Default
+			end,
+			GetMode = function()
+				return CurrentMode
+			end,
+			SetMode = function(mode)
+				setModeInternal(mode)
+			end,
+			GetActive = function()
+				return Active
 			end,
 			Signal = Event.Event:Connect(OpcToggle),
 			SetValue = function(def)
-				local IsSame = Config.Default == def;
-
-				Config.Default = def;
-				ValueText.Text = GetItem(Config.Default);
-
+				local IsSame = Config.Default == def
+				Config.Default = def
+				ValueText.Text = GetItem(Config.Default)
 				if not IsSame then
-					Config.Callback(Config.Default);
-				end;
+					Config.Callback(Fatality:BindToString(def))
+				end
 			end,
-			Flag = Config.Flag and Config.Flag.."Keybind",
-			Option = (Config.Option and Fatality:CreateOption(OptionButton)) or nil;
-		});
+			SetVisible = function(bool)
+				if Keybind then Keybind.Visible = bool end
+			end,
+			-- Сериализация
+			GetConfigValue = function()
+				return {
+					Key = Fatality:BindToString(Config.Default),
+					Mode = CurrentMode,
+				}
+			end,
+			Flag = Config.Flag and Config.Flag .. "Keybind",
+			Option = (Config.Option and Fatality:CreateOption(OptionButton)) or nil,
+		})
 
 		if Config.Flag then
+			Fatality.WindowFlags[FatalWindow][Config.Flag .. "Keybind"] = Respons
+		end
 
-			Fatality.WindowFlags[FatalWindow][Config.Flag.."Keybind"] = Respons;
-		end;
-
-		return Respons;
+		return Respons
 	end;
 
 	return elements;
@@ -4462,6 +4643,7 @@ function Fatality.new(Window: Window)
 
 	Fatal.Theme = Fatality:NewTheme(Window.Theme)
 	Fatal.ThemeChanged = Instance.new("BindableEvent")
+	Fatal.KeybindManager = Fatality:CreateKeybindManager()
 	-- Сохраняем параметры окна в Fatal для доступа из методов
 	Fatal.SidebarWidth = sidebarWidth
 	Fatal.TabHeight = tabHeight
@@ -4622,6 +4804,12 @@ function Fatality.new(Window: Window)
 	Fatality.WindowFatalMap[Fatalitywin] = Fatal
 
 	protect_gui(Fatalitywin);
+
+	Fatalitywin.Destroying:Connect(function()
+		if Fatal.KeybindManager then
+			Fatal.KeybindManager:Destroy()
+		end
+	end)
 
 	FatalFrame.Active = true;
 	FatalFrame.Name = Fatality:RandomString()
@@ -4926,38 +5114,8 @@ function Fatality.new(Window: Window)
 	Fatality:Drag(FatalFrame,FatalFrame,0.1);
 
 	-- Universal bind matching system
-	local function normalizeBind(b)
-		if typeof(b) == "EnumItem" and b.EnumType == Enum.KeyCode then
-			return { kind = "KeyCode", value = b }
-		end
-		if typeof(b) == "string" then
-			-- "Insert" -> Enum.KeyCode.Insert
-			local ok, kc = pcall(function() return Enum.KeyCode[b] end)
-			if ok and kc then
-				return { kind = "KeyCode", value = kc }
-			end
-			-- MouseLeft/MouseRight
-			if b == "MouseLeft" or b == "MouseRight" then
-				return { kind = "Mouse", value = b }
-			end
-		end
-		return nil
-	end
-
-	local function inputMatchesBind(input, bind)
-		if not bind then return false end
-		if bind.kind == "KeyCode" then
-			return input.KeyCode == bind.value
-		end
-		if bind.kind == "Mouse" then
-			if bind.value == "MouseLeft" then
-				return input.UserInputType == Enum.UserInputType.MouseButton1
-			elseif bind.value == "MouseRight" then
-				return input.UserInputType == Enum.UserInputType.MouseButton2
-			end
-		end
-		return false
-	end
+	local function normalizeBind(b) return Fatality:NormalizeBind(b) end
+	local function inputMatchesBind(input, bind) return Fatality:InputMatchesBind(input, bind) end
 
 	Fatal.ToggleBinds = {}
 	function Fatal:SetToggleBinds(binds)
@@ -5039,98 +5197,118 @@ function Fatality.new(Window: Window)
 	end;
 
 	function Fatal:LoadConfig(config)
-
-		for i,v in next , config do
+		for i, v in next, config do
 			if i ~= "Info" then
-				local Element = Fatality.WindowFlags[Fatalitywin][i];
+				local Element = Fatality.WindowFlags[Fatalitywin][i]
 
 				if Element then
-
-					local Value = v.Value;
-					local MainValue;
+					local Value = v.Value
 
 					task.spawn(function()
 						if Value.Type == "String" then
-							Element:SetValue(tostring(Value.Value));
+							Element:SetValue(tostring(Value.Value))
+
 						elseif Value.Type == "Boolean" then
-							Element:SetValue((typeof(Value.Value) == 'boolean' and Value.Value) or (Value.Value == "true" and true or false));
+							local boolVal = Value.Value
+							if typeof(boolVal) ~= "boolean" then
+								boolVal = (boolVal == "true")
+							end
+							Element:SetValue(boolVal)
+
 						elseif Value.Type == "Number" then
-							Element:SetValue(Value.Value);
+							Element:SetValue(Value.Value)
+
 						elseif Value.Type == "Color3" then
-							Element:SetValue(Color3.new(Value.Value.R,Value.Value.G,Value.Value.B) , Value.Value.Transparency);
+							Element:SetValue(
+								Color3.new(Value.Value.R, Value.Value.G, Value.Value.B),
+								Value.Value.Transparency
+							)
+
 						elseif Value.Type == "Table" then
-							Element:SetValue(Value.Value);
+							Element:SetValue(Value.Value)
 
-						end;
-					end);
-				end;
+						elseif Value.Type == "Keybind" then
+							-- Восстанавливаем клавишу
+							local keyStr = Value.Value.Key
+							local mode = Value.Value.Mode
 
-			end;
-		end;
-	end;
+							local bind = Fatality:StringToBind(keyStr)
+							if bind then
+								Element:SetValue(bind)
+							end
+
+							-- Восстанавливаем режим ПОСЛЕ клавиши,
+							-- чтобы SetMode("Always") корректно активировал
+							if mode and Element.SetMode then
+								Element:SetMode(mode)
+							end
+						end
+					end)
+				end
+			end
+		end
+	end
 
 	function Fatal:GetFlagConfig()
-		local Flags = Fatal:GetFlags();
+		local Flags = Fatal:GetFlags()
+		local ConfigElement = {}
 
-		local ConfigElement = {};
+		for i, v in next, Flags do
+			local ValueData = {}
 
-		for i,v in next , Flags do
-			local ValueData = {};
-			local Value = v:GetValue();
-
-			if typeof(Value) == "string" then
-				ValueData.Type = "String";
-				ValueData.Value = Value;
-			elseif typeof(Value) == "boolean" then
-				ValueData.Type = "Boolean";
-				ValueData.Value = Value;
-			elseif typeof(Value) == "number" then
-				ValueData.Type = "Number";
-				ValueData.Value = Value;
-			elseif typeof(Value) == "Color3" then
-				ValueData.Type = "Color3";
-
-				local Color = Value.Color;
-				local Transparency = Value.Transparency;
-
-				ValueData.Value = {
-					R = Color.R,
-					G = Color.G,
-					B = Color.B,
-
-					Transparency = Transparency
-				};
-			elseif typeof(Value) == "table" then
-				if Value.Color and Value.Transparency then
-					ValueData.Type = "Color3";
-
-					local Color = Value.Color;
-					local Transparency = Value.Transparency;
-
-					ValueData.Value = {
-						R = Color.R,
-						G = Color.G,
-						B = Color.B,
-
-						Transparency = Transparency
-					};
-				else
-					ValueData.Type = "Table";
-					ValueData.Value = Value;
-				end;
+			-- Keybind и любые будущие типы с кастомной сериализацией
+			if v.GetConfigValue then
+				local configVal = v:GetConfigValue()
+				ValueData.Type = "Keybind"
+				ValueData.Value = configVal
 			else
-				ValueData.Type = "Unknow";
-				ValueData.Value = nil;
-			end;
+				local Value = v:GetValue()
 
-			rawset(ConfigElement,i,{
+				if typeof(Value) == "string" then
+					ValueData.Type = "String"
+					ValueData.Value = Value
+				elseif typeof(Value) == "boolean" then
+					ValueData.Type = "Boolean"
+					ValueData.Value = Value
+				elseif typeof(Value) == "number" then
+					ValueData.Type = "Number"
+					ValueData.Value = Value
+				elseif typeof(Value) == "Color3" then
+					ValueData.Type = "Color3"
+					ValueData.Value = {
+						R = Value.R,
+						G = Value.G,
+						B = Value.B,
+						Transparency = 0,
+					}
+				elseif typeof(Value) == "table" then
+					if Value.Color and Value.Transparency ~= nil then
+						ValueData.Type = "Color3"
+						local Color = Value.Color
+						ValueData.Value = {
+							R = Color.R,
+							G = Color.G,
+							B = Color.B,
+							Transparency = Value.Transparency,
+						}
+					else
+						ValueData.Type = "Table"
+						ValueData.Value = Value
+					end
+				else
+					ValueData.Type = "Unknown"
+					ValueData.Value = nil
+				end
+			end
+
+			rawset(ConfigElement, i, {
 				FlagId = v.Flag,
 				Value = ValueData,
 			})
-		end;
+		end
 
-		return ConfigElement;
-	end;
+		return ConfigElement
+	end
 
 	function Fatal:AddMenu(Menu : Menu)
 		Menu = Menu or {};
