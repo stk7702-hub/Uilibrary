@@ -3439,6 +3439,8 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 			SearchAPI.Memory(Config.Name);
 		end;
 
+		local Fatal = Fatality.WindowFatalMap[FatalWindow]
+
 		Dropdown.Name = Fatality:RandomString()
 		Dropdown.Parent = Parent
 		Dropdown.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
@@ -3558,7 +3560,7 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 			if b then
 				Fatality:CreateAnimation(icon,0.35,{
 					Rotation = -180,
-					ImageColor3 = Fatality.Colors.Main
+					ImageColor3 = Fatal.Theme.Accent
 				})
 			else
 				Fatality:CreateAnimation(icon,0.35,{
@@ -3663,8 +3665,9 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		Config.Callback = Config.Callback or function() end
 		Config.OnTriggered = Config.OnTriggered or nil
 		Config.Flag = Config.Flag or nil
+		Config.HideMode = Config.HideMode or false
 
-		-- Обратная совместимость: Click -> Toggle
+	-- Обратная совместимость: Click -> Toggle
 		if Config.Mode == "Click" then
 			Config.Mode = "Toggle"
 		end
@@ -3679,19 +3682,20 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 			Colon = ":", LeftControl = "LCtrl", RightControl = "RCtrl",
 			LeftShift = "LShift", RightShift = "RShift", Return = "Enter",
 			LeftBracket = "[", RightBracket = "]", Quote = "'", Comma = ",",
-			Equals = "=", LeftSuper = "Super", RightSuper = "Super"
+			Equals = "=", LeftSuper = "Super", RightSuper = "Super",
+			MouseLeft = "Mouse1",
+			MouseRight = "Mouse2"
 		}
 
 		local GetItem = function(item)
 			if item then
 				if typeof(item) == 'EnumItem' then
 					return Keys[item.Name] or item.Name
-				else
-					return Keys[tostring(item)] or tostring(item)
+				elseif typeof(item) == 'string' then
+					return Keys[item] or item
 				end
-			else
-				return 'None'
 			end
+			return 'None'
 		end
 
 		local Active = (Config.Mode == "Always")
@@ -3810,6 +3814,7 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		local ModeRow = Instance.new("Frame")
 		ModeRow.Name = Fatality:RandomString()
 		ModeRow.Parent = KeybindContainer
+		ModeRow.Visible = not Config.HideMode
 		ModeRow.BackgroundTransparency = 1
 		ModeRow.BorderSizePixel = 0
 		ModeRow.Size = UDim2.new(1, 0, 0, 17)
@@ -3921,7 +3926,7 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 			if b then
 				Fatality:CreateAnimation(ModeDropdownIcon, 0.35, {
 					Rotation = -180,
-					ImageColor3 = Fatality.Colors.Main
+					ImageColor3 = Fatal.Theme.Accent
 				})
 			else
 				Fatality:CreateAnimation(ModeDropdownIcon, 0.35, {
@@ -3977,10 +3982,18 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 			Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING = true
 			ValueText.Text = "..."
 
+			task.wait(0.2)
+
 			local Selected
 			local ok, err = pcall(function()
 				while not Selected do
 					local Key = UserInputService.InputBegan:Wait()
+
+					if Key.KeyCode == Enum.KeyCode.Backspace or Key.KeyCode == Enum.KeyCode.Delete then
+						Selected = "UNBIND"
+						break
+					end
+
 					if Key.KeyCode ~= Enum.KeyCode.Unknown then
 						Selected = Key.KeyCode
 					elseif Key.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -3991,13 +4004,21 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 				end
 			end)
 
+			task.wait(0.15)
+
 			Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING = false
 			IsBinding = false
 
 			if ok and Selected then
-				Config.Default = Selected
-				ValueText.Text = GetItem(Selected)
-				Config.Callback(Fatality:BindToString(Selected))
+				if Selected == "UNBIND" then
+					Config.Default = nil
+					ValueText.Text = "None"
+					Config.Callback("None")
+				else
+					Config.Default = Selected
+					ValueText.Text = GetItem(Selected)
+					Config.Callback(Fatality:BindToString(Selected))
+				end
 			else
 				ValueText.Text = GetItem(Config.Default)
 			end
