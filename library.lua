@@ -2267,7 +2267,6 @@ function Fatality:CreateKeybindManager()
 		table.clear(self.Entries)
 	end
 
-	-- Центральный диспатч InputBegan
 	local connBegan = UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if gameProcessed then return end
 		if UserInputService:GetFocusedTextBox() then return end
@@ -2278,7 +2277,12 @@ function Fatality:CreateKeybindManager()
 			if entry.IsEnabled and not entry.IsEnabled() then continue end
 
 			local mode = entry.GetMode()
+
+			-- Always обрабатывается при смене режима, не здесь
 			if mode == "Always" then continue end
+
+			-- Guard: неизвестный режим — пропускаем
+			if mode ~= "Toggle" and mode ~= "Hold" then continue end
 
 			local rawBind = entry.GetBind()
 			if not rawBind then continue end
@@ -2287,10 +2291,7 @@ function Fatality:CreateKeybindManager()
 			if not normalized then continue end
 			if not Fatality:InputMatchesBind(input, normalized) then continue end
 
-			if mode == "Click" then
-				task.spawn(entry.OnTriggered, true, input, mode)
-
-			elseif mode == "Toggle" then
+			if mode == "Toggle" then
 				local newState = not entry.GetActive()
 				entry.SetActive(newState)
 				task.spawn(entry.OnTriggered, newState, input, mode)
@@ -2302,11 +2303,7 @@ function Fatality:CreateKeybindManager()
 		end
 	end)
 
-	-- Центральный диспатч InputEnded
 	local connEnded = UserInputService.InputEnded:Connect(function(input, gameProcessed)
-		-- IS_REBINDING — единственный жёсткий стоп.
-		-- gameProcessed и FocusedTextBox НЕ блокируют Ended,
-		-- иначе Hold залипнет если игрок кликнул в чат пока держал кнопку.
 		if Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING then return end
 
 		for id, entry in pairs(manager.Entries) do
@@ -3652,24 +3649,17 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		Config.Name = Config.Name or "Keybind"
 		Config.Option = Config.Option or false
 		Config.Default = Config.Default or nil
-		Config.Mode = Config.Mode or "Click"
+		Config.Mode = Config.Mode or "Toggle"
 		Config.Callback = Config.Callback or function() end
 		Config.OnTriggered = Config.OnTriggered or nil
 		Config.Flag = Config.Flag or nil
 
-		local ModeLabels = {
-			Click  = "CLK",
-			Toggle = "TGL",
-			Hold   = "HLD",
-			Always = "ALW",
-		}
-		local ModeOrder = { "Click", "Toggle", "Hold", "Always" }
-		local ModeColors = {
-			Click  = Color3.fromRGB(200, 200, 200),
-			Toggle = Color3.fromRGB(130, 200, 255),
-			Hold   = Color3.fromRGB(255, 200, 100),
-			Always = Color3.fromRGB(140, 255, 140),
-		}
+		-- Обратная совместимость: Click -> Toggle
+		if Config.Mode == "Click" then
+			Config.Mode = "Toggle"
+		end
+
+		local ModeOrder = { "Toggle", "Hold", "Always" }
 
 		local Keys = {
 			One = '1', Two = '2', Three = '3', Four = '4', Five = '5',
@@ -3694,45 +3684,57 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 			end
 		end
 
-		-- Состояние
 		local Active = (Config.Mode == "Always")
 		local CurrentMode = Config.Mode
 		local IsBinding = false
 
-		-- UI
-		local Keybind = Instance.new("Frame")
-		local Keybind_Name = Instance.new("TextLabel")
-		local ValueFrame = Instance.new("Frame")
-		local UICorner = Instance.new("UICorner")
-		local OptionButton = Instance.new("ImageButton")
-		local ValueText = Instance.new("TextLabel")
-		local ModeLabel = Instance.new("TextButton")
-		local ModeCorner = Instance.new("UICorner")
+		local Fatal = Fatality.WindowFatalMap[FatalWindow]
 
 		if SearchAPI then
 			SearchAPI.Memory(Config.Name)
 		end
 
-		Keybind.Name = Fatality:RandomString()
-		Keybind.Parent = Parent
-		Keybind.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-		Keybind.BackgroundTransparency = 1
-		Keybind.BorderSizePixel = 0
-		Keybind.Size = UDim2.new(1, -25, 0, 17)
-		Keybind.AutomaticSize = Enum.AutomaticSize.Y
-		Keybind.ZIndex = ZIndex + 1
-		Fatality:AddDragBlacklist(Keybind)
+		-- ========== КОНТЕЙНЕР (AutomaticSize.Y + UIListLayout) ==========
+		local KeybindContainer = Instance.new("Frame")
+		KeybindContainer.Name = Fatality:RandomString()
+		KeybindContainer.Parent = Parent
+		KeybindContainer.BackgroundTransparency = 1
+		KeybindContainer.BorderSizePixel = 0
+		KeybindContainer.Size = UDim2.new(1, -25, 0, 0)
+		KeybindContainer.AutomaticSize = Enum.AutomaticSize.Y
+		KeybindContainer.ZIndex = ZIndex + 1
+		Fatality:AddDragBlacklist(KeybindContainer)
+
+		local ContainerLayout = Instance.new("UIListLayout")
+		ContainerLayout.Parent = KeybindContainer
+		ContainerLayout.FillDirection = Enum.FillDirection.Vertical
+		ContainerLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		ContainerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		ContainerLayout.Padding = UDim.new(0, 3)
+
+		-- ========== ВЕРХНЯЯ СТРОКА: Название + Поле бинда ==========
+		local TopRow = Instance.new("Frame")
+		TopRow.Name = Fatality:RandomString()
+		TopRow.Parent = KeybindContainer
+		TopRow.BackgroundTransparency = 1
+		TopRow.BorderSizePixel = 0
+		TopRow.Size = UDim2.new(1, 0, 0, 17)
+		TopRow.AutomaticSize = Enum.AutomaticSize.Y
+		TopRow.LayoutOrder = 1
+		TopRow.ZIndex = ZIndex + 1
 
 		local RightContainer = Instance.new("Frame")
 		RightContainer.Name = Fatality:RandomString()
-		RightContainer.Parent = Keybind
+		RightContainer.Parent = TopRow
 		RightContainer.AnchorPoint = Vector2.new(1, 0)
 		RightContainer.BackgroundTransparency = 1
 		RightContainer.Position = UDim2.new(1, 0, 0, 0)
 		RightContainer.Size = UDim2.new(0, 120, 0, 17)
+		RightContainer.ZIndex = ZIndex + 1
 
+		local Keybind_Name = Instance.new("TextLabel")
 		Keybind_Name.Name = Fatality:RandomString()
-		Keybind_Name.Parent = Keybind
+		Keybind_Name.Parent = TopRow
 		Keybind_Name.BackgroundTransparency = 1
 		Keybind_Name.BorderSizePixel = 0
 		Keybind_Name.Position = UDim2.new(0, 0, 0, 0)
@@ -3747,26 +3749,9 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		Keybind_Name.TextYAlignment = Enum.TextYAlignment.Top
 		Keybind_Name.TextWrapped = true
 		Fatality:ProtectText(Keybind_Name, Config.Name)
+		Fatality:BindTheme(Fatal, Keybind_Name, "TextColor3", "Text")
 
-		-- Метка режима
-		ModeLabel.Name = Fatality:RandomString()
-		ModeLabel.Parent = RightContainer
-		ModeLabel.AnchorPoint = Vector2.new(1, 0)
-		ModeLabel.BackgroundColor3 = Fatality.Colors.Black
-		ModeLabel.BackgroundTransparency = 0.3
-		ModeLabel.BorderSizePixel = 0
-		ModeLabel.Position = UDim2.new(1, -82, 0, 1)
-		ModeLabel.Size = UDim2.new(0, 30, 0, 14)
-		ModeLabel.ZIndex = ZIndex + 3
-		ModeLabel.FontFace = Fatality.FontSemiBold
-		ModeLabel.Text = ModeLabels[CurrentMode]
-		ModeLabel.TextColor3 = ModeColors[CurrentMode]
-		ModeLabel.TextSize = 8
-		ModeLabel.AutoButtonColor = false
-
-		ModeCorner.CornerRadius = UDim.new(0, 2)
-		ModeCorner.Parent = ModeLabel
-
+		local ValueFrame = Instance.new("Frame")
 		ValueFrame.Name = Fatality:RandomString()
 		ValueFrame.Parent = RightContainer
 		ValueFrame.AnchorPoint = Vector2.new(1, 0)
@@ -3775,10 +3760,13 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		ValueFrame.Position = UDim2.new(1, -3, 0, 1)
 		ValueFrame.Size = UDim2.new(0, 75, 0, 14)
 		ValueFrame.ZIndex = ZIndex + 2
+		Fatality:BindTheme(Fatal, ValueFrame, "BackgroundColor3", "Field")
 
+		local UICorner = Instance.new("UICorner")
 		UICorner.CornerRadius = UDim.new(0, 2)
 		UICorner.Parent = ValueFrame
 
+		local OptionButton = Instance.new("ImageButton")
 		OptionButton.Name = Fatality:RandomString()
 		OptionButton.Parent = ValueFrame
 		OptionButton.AnchorPoint = Vector2.new(0, 0.5)
@@ -3790,7 +3778,10 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		OptionButton.Image = "http://www.roblox.com/asset/?id=14007344336"
 		OptionButton.ImageTransparency = 0.6
 		OptionButton.Visible = Config.Option or false
+		OptionButton.ZIndex = ZIndex + 4
+		OptionButton.AutoButtonColor = false
 
+		local ValueText = Instance.new("TextLabel")
 		ValueText.Name = Fatality:RandomString()
 		ValueText.Parent = ValueFrame
 		ValueText.BackgroundTransparency = 1
@@ -3803,60 +3794,134 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		ValueText.TextSize = 9
 		ValueText.TextStrokeTransparency = 0.85
 		ValueText.TextTransparency = 0.4
+		Fatality:BindTheme(Fatal, ValueText, "TextColor3", "Text")
 
-		-- Обновление UI метки
-		local function updateModeUI()
-			ModeLabel.Text = ModeLabels[CurrentMode]
-			Fatality:CreateAnimation(ModeLabel, 0.25, {
-				TextColor3 = ModeColors[CurrentMode]
-			})
-		end
+		-- ========== НИЖНЯЯ СТРОКА: Mode label + Dropdown ==========
+		local ModeRow = Instance.new("Frame")
+		ModeRow.Name = Fatality:RandomString()
+		ModeRow.Parent = KeybindContainer
+		ModeRow.BackgroundTransparency = 1
+		ModeRow.BorderSizePixel = 0
+		ModeRow.Size = UDim2.new(1, 0, 0, 17)
+		ModeRow.LayoutOrder = 2
+		ModeRow.ZIndex = ZIndex + 1
 
-		-- Смена режима
+		local ModeLabel = Instance.new("TextLabel")
+		ModeLabel.Name = Fatality:RandomString()
+		ModeLabel.Parent = ModeRow
+		ModeLabel.BackgroundTransparency = 1
+		ModeLabel.BorderSizePixel = 0
+		ModeLabel.Position = UDim2.new(0, 0, 0, 0)
+		ModeLabel.Size = UDim2.new(1, -125, 0, 17)
+		ModeLabel.ZIndex = ZIndex + 2
+		ModeLabel.FontFace = Fatality.FontSemiBold
+		ModeLabel.Text = "Mode"
+		ModeLabel.TextSize = 11
+		ModeLabel.TextTransparency = 0.4
+		ModeLabel.TextXAlignment = Enum.TextXAlignment.Left
+		Fatality:BindTheme(Fatal, ModeLabel, "TextColor3", "TextDim")
+
+		local ModeRightContainer = Instance.new("Frame")
+		ModeRightContainer.Name = Fatality:RandomString()
+		ModeRightContainer.Parent = ModeRow
+		ModeRightContainer.AnchorPoint = Vector2.new(1, 0)
+		ModeRightContainer.BackgroundTransparency = 1
+		ModeRightContainer.Position = UDim2.new(1, 0, 0, 0)
+		ModeRightContainer.Size = UDim2.new(0, 120, 0, 17)
+		ModeRightContainer.ZIndex = ZIndex + 1
+
+		local ModeDropdownFrame = Instance.new("Frame")
+		ModeDropdownFrame.Name = Fatality:RandomString()
+		ModeDropdownFrame.Parent = ModeRightContainer
+		ModeDropdownFrame.AnchorPoint = Vector2.new(1, 0)
+		ModeDropdownFrame.BorderSizePixel = 0
+		ModeDropdownFrame.Position = UDim2.new(1, -3, 0, 1)
+		ModeDropdownFrame.Size = UDim2.new(0, 75, 0, 14)
+		ModeDropdownFrame.ZIndex = ZIndex + 2
+		Fatality:BindTheme(Fatal, ModeDropdownFrame, "BackgroundColor3", "Field")
+
+		local ModeDropdownCorner = Instance.new("UICorner")
+		ModeDropdownCorner.CornerRadius = UDim.new(0, 2)
+		ModeDropdownCorner.Parent = ModeDropdownFrame
+
+		local ModeDropdownText = Instance.new("TextLabel")
+		ModeDropdownText.Name = Fatality:RandomString()
+		ModeDropdownText.Parent = ModeDropdownFrame
+		ModeDropdownText.AnchorPoint = Vector2.new(0, 0.5)
+		ModeDropdownText.BackgroundTransparency = 1
+		ModeDropdownText.BorderSizePixel = 0
+		ModeDropdownText.Position = UDim2.new(0, 3, 0.5, 0)
+		ModeDropdownText.Size = UDim2.new(1, -18, 0.8, 0)
+		ModeDropdownText.ZIndex = ZIndex + 3
+		ModeDropdownText.FontFace = Fatality.FontSemiBold
+		ModeDropdownText.Text = CurrentMode
+		ModeDropdownText.TextSize = 9
+		ModeDropdownText.TextTransparency = 0.5
+		ModeDropdownText.TextXAlignment = Enum.TextXAlignment.Left
+		ModeDropdownText.TextTruncate = Enum.TextTruncate.SplitWord
+		Fatality:BindTheme(Fatal, ModeDropdownText, "TextColor3", "Text")
+
+		local ModeDropdownIcon = Instance.new("ImageLabel")
+		ModeDropdownIcon.Name = Fatality:RandomString()
+		ModeDropdownIcon.Parent = ModeDropdownFrame
+		ModeDropdownIcon.AnchorPoint = Vector2.new(1, 0)
+		ModeDropdownIcon.BackgroundTransparency = 1
+		ModeDropdownIcon.BorderSizePixel = 0
+		ModeDropdownIcon.Position = UDim2.new(1, 0, 0, 0)
+		ModeDropdownIcon.Size = UDim2.new(0, 14, 0, 14)
+		ModeDropdownIcon.SizeConstraint = Enum.SizeConstraint.RelativeYY
+		ModeDropdownIcon.ZIndex = ZIndex + 3
+		ModeDropdownIcon.Image = "rbxassetid://10709790948"
+
+		-- ========== ЛОГИКА СМЕНЫ РЕЖИМА (детерминированная) ==========
 		local function setModeInternal(newMode)
 			if not table.find(ModeOrder, newMode) then return end
 			local oldMode = CurrentMode
 			if oldMode == newMode then return end
 
+			local wasActive = Active
 			CurrentMode = newMode
-			updateModeUI()
+			ModeDropdownText.Text = CurrentMode
 
 			if newMode == "Always" then
 				Active = true
 				if Config.OnTriggered then
-					task.spawn(Config.OnTriggered, true, nil, newMode)
+					task.spawn(Config.OnTriggered, true, nil, "Always")
 				end
-			elseif oldMode == "Always" then
+			else
 				Active = false
-				if Config.OnTriggered then
-					task.spawn(Config.OnTriggered, false, nil, "Always")
-				end
-			elseif oldMode == "Hold" and Active then
-				Active = false
-				if Config.OnTriggered then
-					task.spawn(Config.OnTriggered, false, nil, newMode)
+				if wasActive and Config.OnTriggered then
+					task.spawn(Config.OnTriggered, false, nil, oldMode)
 				end
 			end
 		end
 
-		local function cycleMode()
-			local currentIdx = table.find(ModeOrder, CurrentMode) or 1
-			local nextIdx = (currentIdx % #ModeOrder) + 1
-			setModeInternal(ModeOrder[nextIdx])
-		end
-
-		ModeLabel.MouseButton1Click:Connect(cycleMode)
-
-		Fatality:CreateHover(ModeLabel, function(bool)
-			if bool then
-				Fatality:CreateAnimation(ModeLabel, 0.25, { BackgroundTransparency = 0.1 })
-			else
-				Fatality:CreateAnimation(ModeLabel, 0.25, { BackgroundTransparency = 0.3 })
+		-- ========== DROPDOWN РЕЖИМА ==========
+		local modeDropdownRes
+		modeDropdownRes = Fatality:CreateDropdown(ModeDropdownFrame, CurrentMode, false, false, function(selected)
+			if selected and selected ~= CurrentMode then
+				setModeInternal(selected)
 			end
 		end)
 
-		-- Менеджер
-		local Fatal = Fatality.WindowFatalMap[FatalWindow]
+		modeDropdownRes:set_data(ModeOrder)
+		modeDropdownRes:refresh()
+
+		modeDropdownRes:on_toggle(function(b)
+			if b then
+				Fatality:CreateAnimation(ModeDropdownIcon, 0.35, {
+					Rotation = -180,
+					ImageColor3 = Fatality.Colors.Main
+				})
+			else
+				Fatality:CreateAnimation(ModeDropdownIcon, 0.35, {
+					Rotation = 0,
+					ImageColor3 = Color3.fromRGB(255, 255, 255)
+				})
+			end
+		end)
+
+		-- ========== KEYBIND MANAGER ==========
 		local kbManager = Fatal and Fatal.KeybindManager
 
 		local managerId
@@ -3878,15 +3943,13 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 					task.spawn(Config.OnTriggered, active, input, mode)
 				end,
 				IsEnabled = function()
-					-- НЕ зависит от видимости UI — бинды работают всегда
 					return not IsBinding
 				end,
 			})
 		end
 
-		-- Автоочистка при уничтожении элемента
-		Keybind.Destroying:Connect(function()
-			-- Сброс ребинда если элемент уничтожен в процессе
+		-- ========== CLEANUP ==========
+		KeybindContainer.Destroying:Connect(function()
 			if IsBinding then
 				Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING = false
 				IsBinding = false
@@ -3897,7 +3960,7 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 			end
 		end)
 
-		-- Ребинд
+		-- ========== REBIND ==========
 		Fatality:NewInput(ValueFrame, function()
 			if IsBinding then return end
 			IsBinding = true
@@ -3918,7 +3981,6 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 				end
 			end)
 
-			-- FINALLY: гарантированный сброс, даже при ошибке/уничтожении
 			Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING = false
 			IsBinding = false
 
@@ -3927,12 +3989,11 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 				ValueText.Text = GetItem(Selected)
 				Config.Callback(Fatality:BindToString(Selected))
 			else
-				-- Откат текста при ошибке/отмене
 				ValueText.Text = GetItem(Config.Default)
 			end
 		end)
 
-		-- Видимость (анимации секции)
+		-- ========== OPACITY TOGGLE (section show/hide) ==========
 		local OpcToggle = function(value)
 			if value then
 				Fatality:CreateAnimation(Keybind_Name, 0.45, { TextTransparency = 0.2 })
@@ -3944,10 +4005,10 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 				Fatality:CreateAnimation(OptionButton, 0.45, {
 					ImageTransparency = (Config.Option and 0.6) or 1
 				})
-				Fatality:CreateAnimation(ModeLabel, 0.45, {
-					BackgroundTransparency = 0.3,
-					TextTransparency = 0
-				})
+				Fatality:CreateAnimation(ModeLabel, 0.45, { TextTransparency = 0.4 })
+				Fatality:CreateAnimation(ModeDropdownFrame, 0.45, { BackgroundTransparency = 0 })
+				Fatality:CreateAnimation(ModeDropdownText, 0.45, { TextTransparency = 0.5 })
+				Fatality:CreateAnimation(ModeDropdownIcon, 0.45, { ImageTransparency = 0 })
 			else
 				Fatality:CreateAnimation(Keybind_Name, 0.45, { TextTransparency = 1 })
 				Fatality:CreateAnimation(ValueFrame, 0.45, { BackgroundTransparency = 1 })
@@ -3956,20 +4017,20 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 					TextTransparency = 1
 				})
 				Fatality:CreateAnimation(OptionButton, 0.45, { ImageTransparency = 1 })
-				Fatality:CreateAnimation(ModeLabel, 0.45, {
-					BackgroundTransparency = 1,
-					TextTransparency = 1
-				})
+				Fatality:CreateAnimation(ModeLabel, 0.45, { TextTransparency = 1 })
+				Fatality:CreateAnimation(ModeDropdownFrame, 0.45, { BackgroundTransparency = 1 })
+				Fatality:CreateAnimation(ModeDropdownText, 0.45, { TextTransparency = 1 })
+				Fatality:CreateAnimation(ModeDropdownIcon, 0.45, { ImageTransparency = 1 })
 			end
 		end
 
 		OpcToggle(Event:GetAttribute('V'))
 
-		-- Always: триггерим при старте
 		if CurrentMode == "Always" and Config.OnTriggered then
 			task.defer(Config.OnTriggered, true, nil, "Always")
 		end
 
+		-- ========== RESPONSE ==========
 		local Respons = Fatality:CreateResponse({
 			Rename = function(new_name)
 				Keybind_Name.Text = new_name
@@ -3982,7 +4043,11 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 				return CurrentMode
 			end,
 			SetMode = function(mode)
+				if mode == "Click" then mode = "Toggle" end
 				setModeInternal(mode)
+				ModeDropdownText.Text = CurrentMode
+				modeDropdownRes:change_default(CurrentMode)
+				modeDropdownRes:refresh()
 			end,
 			GetActive = function()
 				return Active
@@ -3997,9 +4062,8 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 				end
 			end,
 			SetVisible = function(bool)
-				if Keybind then Keybind.Visible = bool end
+				if KeybindContainer then KeybindContainer.Visible = bool end
 			end,
-			-- Сериализация
 			GetConfigValue = function()
 				return {
 					Key = Fatality:BindToString(Config.Default),
@@ -5227,21 +5291,24 @@ function Fatality.new(Window: Window)
 						elseif Value.Type == "Table" then
 							Element:SetValue(Value.Value)
 
-						elseif Value.Type == "Keybind" then
-							-- Восстанавливаем клавишу
-							local keyStr = Value.Value.Key
-							local mode = Value.Value.Mode
+					elseif Value.Type == "Keybind" then
+						-- Восстанавливаем клавишу
+						local keyStr = Value.Value.Key
+						local mode = Value.Value.Mode
 
-							local bind = Fatality:StringToBind(keyStr)
-							if bind then
-								Element:SetValue(bind)
-							end
+						-- Обратная совместимость: Click -> Toggle
+						if mode == "Click" then mode = "Toggle" end
 
-							-- Восстанавливаем режим ПОСЛЕ клавиши,
-							-- чтобы SetMode("Always") корректно активировал
-							if mode and Element.SetMode then
-								Element:SetMode(mode)
-							end
+						local bind = Fatality:StringToBind(keyStr)
+						if bind then
+							Element:SetValue(bind)
+						end
+
+						-- Восстанавливаем режим ПОСЛЕ клавиши,
+						-- чтобы SetMode("Always") корректно активировал
+						if mode and Element.SetMode then
+							Element:SetMode(mode)
+						end
 						end
 					end)
 				end
