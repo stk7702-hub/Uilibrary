@@ -282,6 +282,7 @@ local Fatality = {};
 Fatality.Ascii = "qwertyuiopasdfghjklzxcvbnmQWRTYUIOPASDFGHJKLZXCVBNM";
 Fatality.GLOBAL_ENVIRONMENT = {};
 Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING = false;
+Fatality.GLOBAL_ENVIRONMENT.OPEN_DROPDOWN_FRAME = nil;
 Fatality.Windows = {};
 Fatality.WindowFatalMap = {}; -- Маппинг окна к Fatal объекту
 Fatality.FontSemiBold = Font.new('rbxasset://fonts/families/GothamSSm.json',Enum.FontWeight.SemiBold,Enum.FontStyle.Normal);
@@ -1510,7 +1511,10 @@ function Fatality:CreateOption(OptionButton: ImageButton): Elements
 
 	UserInputService.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-			if not Fatality:IsMouseOverFrame(ExtElementFrame) and not Fatality.GLOBAL_ENVIRONMENT.IS_HOLD_COLOR_PICKER then
+			local dd = Fatality.GLOBAL_ENVIRONMENT.OPEN_DROPDOWN_FRAME;
+			local overDropdown = dd and dd.Parent and Fatality:IsMouseOverFrame(dd);
+			
+			if not Fatality:IsMouseOverFrame(ExtElementFrame) and not overDropdown and not Fatality.GLOBAL_ENVIRONMENT.IS_HOLD_COLOR_PICKER then
 				ToggleExt(false);
 			end;
 		end;
@@ -2370,6 +2374,8 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 
 	local Toggle = function(value)
 		if value then
+			Fatality.GLOBAL_ENVIRONMENT.OPEN_DROPDOWN_FRAME = DropdownItemFrame;
+			
 			if SPAWN_THREAD then
 				task.cancel(SPAWN_THREAD);
 				SPAWN_THREAD = nil;
@@ -2395,6 +2401,10 @@ function Fatality:CreateDropdown(Parent: Frame, Default: string | {[string]: boo
 				ImageTransparency = 0.75
 			})
 		else
+			if Fatality.GLOBAL_ENVIRONMENT.OPEN_DROPDOWN_FRAME == DropdownItemFrame then
+				Fatality.GLOBAL_ENVIRONMENT.OPEN_DROPDOWN_FRAME = nil;
+			end;
+			
 			if SPAWN_THREAD then
 				task.cancel(SPAWN_THREAD);
 				SPAWN_THREAD = nil;
