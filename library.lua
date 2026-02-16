@@ -2254,6 +2254,17 @@ function Fatality:CreateKeybindManager()
 		self._nextId = self._nextId + 1
 		local id = self._nextId
 		self.Entries[id] = entry
+
+		-- If mode is "Always", immediately activate
+		if entry.GetMode and entry.GetMode() == "Always" then
+			if not entry.GetActive() then
+				entry.SetActive(true)
+				if entry.OnTriggered then
+					task.defer(entry.OnTriggered, true, nil, "Always")
+				end
+			end
+		end
+
 		return id
 	end
 
@@ -3892,21 +3903,32 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		local function setModeInternal(newMode)
 			if not table.find(ModeOrder, newMode) then return end
 			local oldMode = CurrentMode
-			if oldMode == newMode then return end
-
-			local wasActive = Active
 			CurrentMode = newMode
 			ModeDropdownText.Text = CurrentMode
 
 			if newMode == "Always" then
-				Active = true
-				if Config.OnTriggered then
-					task.spawn(Config.OnTriggered, true, nil, "Always")
+				-- "Always" means ALWAYS active, no key needed
+				if not Active then
+					Active = true
+					if Config.OnTriggered then
+						task.spawn(Config.OnTriggered, true, nil, "Always")
+					end
 				end
 			else
-				Active = false
-				if wasActive and Config.OnTriggered then
-					task.spawn(Config.OnTriggered, false, nil, oldMode)
+				-- Switching FROM "Always" to another mode - deactivate
+				if oldMode == "Always" and Active then
+					Active = false
+					if Config.OnTriggered then
+						task.spawn(Config.OnTriggered, false, nil, oldMode)
+					end
+				elseif oldMode ~= "Always" then
+					-- Switching between Toggle and Hold - just reset active state
+					if Active then
+						Active = false
+						if Config.OnTriggered then
+							task.spawn(Config.OnTriggered, false, nil, oldMode)
+						end
+					end
 				end
 			end
 		end
@@ -3982,46 +4004,41 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 			Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING = true
 			ValueText.Text = "..."
 
-			task.wait(0.2)
-
 			local Selected
-			local ok, err = pcall(function()
-				while not Selected do
-					local Key = UserInputService.InputBegan:Wait()
+			local inputConn
+			inputConn = UserInputService.InputBegan:Connect(function(Key, gameProcessed)
+				if Selected then return end
 
-					if Key.KeyCode == Enum.KeyCode.Backspace or Key.KeyCode == Enum.KeyCode.Delete then
-						Selected = "UNBIND"
-						break
-					end
+				if Key.KeyCode == Enum.KeyCode.Backspace or Key.KeyCode == Enum.KeyCode.Delete then
+					Selected = "UNBIND"
+				elseif Key.KeyCode ~= Enum.KeyCode.Unknown then
+					Selected = Key.KeyCode
+				elseif Key.UserInputType == Enum.UserInputType.MouseButton1 then
+					Selected = "MouseLeft"
+				elseif Key.UserInputType == Enum.UserInputType.MouseButton2 then
+					Selected = "MouseRight"
+				end
 
-					if Key.KeyCode ~= Enum.KeyCode.Unknown then
-						Selected = Key.KeyCode
-					elseif Key.UserInputType == Enum.UserInputType.MouseButton1 then
-						Selected = "MouseLeft"
-					elseif Key.UserInputType == Enum.UserInputType.MouseButton2 then
-						Selected = "MouseRight"
-					end
+				if Selected then
+					inputConn:Disconnect()
+
+					-- Use task.defer instead of task.wait to update on next frame
+					task.defer(function()
+						Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING = false
+						IsBinding = false
+
+						if Selected == "UNBIND" then
+							Config.Default = nil
+							ValueText.Text = "None"
+							Config.Callback("None")
+						else
+							Config.Default = Selected
+							ValueText.Text = GetItem(Selected)
+							Config.Callback(Fatality:BindToString(Selected))
+						end
+					end)
 				end
 			end)
-
-			task.wait(0.15)
-
-			Fatality.GLOBAL_ENVIRONMENT.IS_REBINDING = false
-			IsBinding = false
-
-			if ok and Selected then
-				if Selected == "UNBIND" then
-					Config.Default = nil
-					ValueText.Text = "None"
-					Config.Callback("None")
-				else
-					Config.Default = Selected
-					ValueText.Text = GetItem(Selected)
-					Config.Callback(Fatality:BindToString(Selected))
-				end
-			else
-				ValueText.Text = GetItem(Config.Default)
-			end
 		end)
 
 		-- ========== OPACITY TOGGLE (section show/hide) ==========
@@ -4056,10 +4073,6 @@ function Fatality:CreateElements(Parent : Frame , ZIndex : number , Event : Bind
 		end
 
 		OpcToggle(Event:GetAttribute('V'))
-
-		if CurrentMode == "Always" and Config.OnTriggered then
-			task.defer(Config.OnTriggered, true, nil, "Always")
-		end
 
 		-- ========== RESPONSE ==========
 		local Respons = Fatality:CreateResponse({
