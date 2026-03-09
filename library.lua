@@ -4572,11 +4572,23 @@ function Fatality:CreateConfigWindow(Root: ScreenGui , Fatal , Button: ImageButt
 		end,
 
 		ReloadConfig = function()
-			assert(res.ConfigDirectory , "Config directory not found");
+			if not res.ConfigDirectory then
+				warn("[Fatality Config] Reload skipped: ConfigDirectory is nil")
+				return
+			end
 
 			local files = {};
 
-			for i,v in next , listfiles(res.ConfigDirectory) do
+			local ok, result = pcall(function()
+				return listfiles(res.ConfigDirectory)
+			end)
+
+			if not ok then
+				warn("[Fatality Config] listfiles failed:", result)
+				return
+			end
+
+			for i,v in next , result do
 				local spl = (string.find(v,'/',1,true) and string.split(v,'/')) or (string.find(v,'\\',1,true) and string.split(v,'\\'));
 				local name = spl[#spl];
 
@@ -4588,12 +4600,20 @@ function Fatality:CreateConfigWindow(Root: ScreenGui , Fatal , Button: ImageButt
 		end,
 
 		DeleteConfig = function(name)
-			assert(res.ConfigDirectory , "Config directory not found");
+			if not res.ConfigDirectory then
+				warn("[Fatality Config] Delete skipped: ConfigDirectory is nil")
+				return
+			end
 
 			local path = res.ConfigDirectory..'/'..tostring(name);
 
 			if isfile(path) then
-				delfile(path)
+				local ok, err = pcall(function()
+					delfile(path)
+				end)
+				if not ok then
+					warn("[Fatality Config] delfile failed:", err)
+				end
 			end;
 		end,
 
@@ -4602,21 +4622,48 @@ function Fatality:CreateConfigWindow(Root: ScreenGui , Fatal , Button: ImageButt
 				return;	
 			end;
 
-			assert(res.ConfigDirectory , "Config directory not found");
+			if not res.ConfigDirectory then
+				warn("[Fatality Config] Save skipped: ConfigDirectory is nil")
+				return
+			end
 
 			local path = res.ConfigDirectory..'/'..tostring(name);
 
-			writefile(path , content);
+			local ok, err = pcall(function()
+				writefile(path , content);
+			end)
+
+			if not ok then
+				warn("[Fatality Config] writefile failed:", err)
+			end
 		end,
 
 		LoadConfig = function(name)
-
-			assert(res.ConfigDirectory , "Config directory not found");
+			if not res.ConfigDirectory then
+				warn("[Fatality Config] Load skipped: ConfigDirectory is nil")
+				return
+			end
 
 			local path = res.ConfigDirectory..'/'..tostring(name);
 
 			if isfile(path) then
-				local decoded = game:GetService('HttpService'):JSONDecode(readfile(path));
+				local okRead, fileData = pcall(function()
+					return readfile(path)
+				end)
+
+				if not okRead then
+					warn("[Fatality Config] readfile failed:", fileData)
+					return
+				end
+
+				local okDecode, decoded = pcall(function()
+					return game:GetService('HttpService'):JSONDecode(fileData)
+				end)
+
+				if not okDecode then
+					warn("[Fatality Config] JSON decode failed:", decoded)
+					return
+				end
 
 				Fatal.Notifier:Notify({
 					Title = "Config",
@@ -4633,30 +4680,97 @@ function Fatality:CreateConfigWindow(Root: ScreenGui , Fatal , Button: ImageButt
 			Folder = Folder or "Fatality"
 			Name = Name or "Fatality"
 
-			res.ConfigName = Name
-			res.ConfigFolder = Folder
-
-			if not isfolder(Folder) then
-				makefolder(Folder);	
-			end;
-
-			if not isfolder(Folder.."/Config") then
-				makefolder(Folder.."/Config");	
-			end;
-
-			local cfgPath = Folder.."/Config/"..tostring(Name);
-
-			if not isfolder(cfgPath) then
-				makefolder(cfgPath)
-			end;
-
-			res.ConfigDirectory = cfgPath;
-
 			if res.__initialized then
 				res:ReloadConfig();
 				return;
 			end;
 
+			if res.__initBusy then
+				return;
+			end;
+
+			res.__initBusy = true;
+
+			local function normalizePath(path)
+				path = tostring(path or "")
+				path = path:gsub("\\","/")
+				path = path:gsub("/+","/")
+				path = path:gsub("^/+", "")
+				path = path:gsub("/+$", "")
+				return path
+			end
+
+			local function sanitizeName(str)
+				str = tostring(str or "Fatality")
+				str = str:gsub("[<>:\"/\\|%?%*]", "_")
+				str = str:gsub("^%s+", "")
+				str = str:gsub("%s+$", "")
+				if str == "" then
+					str = "Fatality"
+				end
+				return str
+			end
+
+			local function safeIsFolder(path)
+				local ok, result = pcall(function()
+					return isfolder(path)
+				end)
+				return ok and result or false
+			end
+
+			local function safeIsFile(path)
+				local ok, result = pcall(function()
+					return isfile(path)
+				end)
+				return ok and result or false
+			end
+
+			local function ensureFolder(path)
+				path = normalizePath(path)
+				if path == "" then
+					return false, "empty path"
+				end
+
+				local current = ""
+				for segment in string.gmatch(path, "[^/]+") do
+					current = (current == "" and segment) or (current .. "/" .. segment)
+
+					if safeIsFile(current) then
+						return false, "path is a file: " .. current
+					end
+
+					if not safeIsFolder(current) then
+						local okMake, errMake = pcall(function()
+							makefolder(current)
+						end)
+
+						if (not okMake) and not safeIsFolder(current) then
+							return false, errMake or ("failed to create directory: " .. current)
+						end
+					end
+				end
+
+				return true
+			end
+
+			Folder = normalizePath(Folder)
+			Name = sanitizeName(Name)
+
+			res.ConfigName = Name
+			res.ConfigFolder = Folder
+
+			local cfgPath = Folder.."/Config/"..tostring(Name);
+			local okEnsure, errEnsure = ensureFolder(cfgPath)
+
+			res.__initBusy = false;
+
+			if not okEnsure then
+				warn("[Fatality Config] Failed to initialize config folder:", errEnsure)
+				res.ConfigDirectory = nil
+				return
+			end
+
+			res.ConfigDirectory = cfgPath;
 			res.__initialized = true;
 
 			AddConfigButton.MouseButton1Click:Connect(function()
@@ -5298,12 +5412,31 @@ function Fatality.new(Window: Window)
 	end;
 
 	function Fatal:InitConfigSystem(configName: string?, folder: string?)
+		if self.ConfigManager and self.ConfigManager.__initialized then
+			return self.ConfigManager;
+		end
+
+		if self.__configInitBusy then
+			return self.ConfigManager or self:AddConfig();
+		end
+
+		self.__configInitBusy = true;
+
 		local manager = self:AddConfig();
-		manager:Init(
-			configName or Window.ConfigName or Window.Name,
-			folder or Window.ConfigFolder or "Fatality"
-		);
+		local ok, err = pcall(function()
+			manager:Init(
+				configName or Window.ConfigName or Window.Name,
+				folder or Window.ConfigFolder or "Fatality"
+			);
+		end)
+
+		self.__configInitBusy = false;
 		self.ConfigManager = manager;
+
+		if not ok then
+			warn("[Fatality Config] InitConfigSystem failed:", err)
+		end
+
 		return manager;
 	end;
 
@@ -7097,7 +7230,12 @@ function Fatality.new(Window: Window)
 
 	if Window.AutoConfig ~= false then
 		task.defer(function()
-			Fatal:InitConfigSystem(Window.ConfigName, Window.ConfigFolder);
+			local ok, err = pcall(function()
+				Fatal:InitConfigSystem(Window.ConfigName, Window.ConfigFolder);
+			end)
+			if not ok then
+				warn("[Fatality Config] Auto init failed:", err)
+			end
 		end);
 	end
 
