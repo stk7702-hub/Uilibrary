@@ -8,7 +8,10 @@ export type Window = {
 	SidebarWidth: number?,
 	TabHeight: number?,
 	HeaderHeight: number?,
-	BottomHeight: number?
+	BottomHeight: number?,
+	ConfigFolder: string?,
+	ConfigName: string?,
+	AutoConfig: boolean?
 }
 
 export type Loader = {
@@ -4627,21 +4630,34 @@ function Fatality:CreateConfigWindow(Root: ScreenGui , Fatal , Button: ImageButt
 		end,
 
 		Init = function(Name: string,Folder: string)
-			if not isfolder(Folder or "Fatality") then
-				makefolder(Folder or "Fatality");	
+			Folder = Folder or "Fatality"
+			Name = Name or "Fatality"
+
+			res.ConfigName = Name
+			res.ConfigFolder = Folder
+
+			if not isfolder(Folder) then
+				makefolder(Folder);	
 			end;
 
-			if not isfolder((Folder or "Fatality").."/Config") then
-				makefolder((Folder or "Fatality").."/Config");	
+			if not isfolder(Folder.."/Config") then
+				makefolder(Folder.."/Config");	
 			end;
 
-			local cfgPath = (Folder or "Fatality").."/Config/"..tostring(Name);
+			local cfgPath = Folder.."/Config/"..tostring(Name);
 
 			if not isfolder(cfgPath) then
 				makefolder(cfgPath)
 			end;
 
 			res.ConfigDirectory = cfgPath;
+
+			if res.__initialized then
+				res:ReloadConfig();
+				return;
+			end;
+
+			res.__initialized = true;
 
 			AddConfigButton.MouseButton1Click:Connect(function()
 				local configName = TextBox.Text;
@@ -4651,8 +4667,8 @@ function Fatality:CreateConfigWindow(Root: ScreenGui , Fatal , Button: ImageButt
 				local flags = Fatal:GetFlagConfig();
 
 				flags.Info = {
-					Name = Name,
-					Folder = Folder,
+					Name = res.ConfigName,
+					Folder = res.ConfigFolder,
 					ConfigName = configName,
 				};
 
@@ -4683,8 +4699,8 @@ function Fatality:CreateConfigWindow(Root: ScreenGui , Fatal , Button: ImageButt
 					local configName = import.Name;
 
 					flags.Info = {
-						Name = Name,
-						Folder = Folder,
+						Name = res.ConfigName,
+						Folder = res.ConfigFolder,
 						ConfigName = configName,
 						Type = "Overwrite"
 					};
@@ -4716,7 +4732,9 @@ function Fatality:CreateConfigWindow(Root: ScreenGui , Fatal , Button: ImageButt
 					res:DeleteConfig(import.Name);
 					res:ReloadConfig();
 				end;
-			end)
+			end);
+
+			res:ReloadConfig();
 		end,
 	});
 
@@ -4727,13 +4745,18 @@ function Fatality.new(Window: Window)
 	Window = Window or {};
 	Window.Name = Window.Name or "FATALITY";
 	Window.Scale = Window.Scale or UDim2.new(0, 750, 0, 500);
-		Window.Keybind = Window.Keybind or Enum.KeyCode.RightControl;
+	Window.Keybind = Window.Keybind or Enum.KeyCode.RightControl;
 	Window.Expire = Window.Expire or "never";
 	-- Устанавливаем значения по умолчанию с проверкой на nil
 	Window.SidebarWidth = (Window.SidebarWidth ~= nil and typeof(Window.SidebarWidth) == "number") and Window.SidebarWidth or 190;
 	Window.TabHeight = (Window.TabHeight ~= nil and typeof(Window.TabHeight) == "number") and Window.TabHeight or 40;
 	Window.HeaderHeight = (Window.HeaderHeight ~= nil and typeof(Window.HeaderHeight) == "number") and Window.HeaderHeight or 40;
 	Window.BottomHeight = (Window.BottomHeight ~= nil and typeof(Window.BottomHeight) == "number") and Window.BottomHeight or 25;
+	Window.ConfigFolder = Window.ConfigFolder or "Fatality";
+	Window.ConfigName = Window.ConfigName or Window.Name;
+	if Window.AutoConfig == nil then
+		Window.AutoConfig = true;
+	end
 	
 	-- Локальные переменные для удобства использования (гарантируем, что это числа)
 	local sidebarWidth = tonumber(Window.SidebarWidth) or 190;
@@ -4746,6 +4769,7 @@ function Fatality.new(Window: Window)
 		ElementContents = {},
 		MenuSelected = nil,
 		Toggle = true,
+		ConfigManager = nil,
 		Signal = Instance.new('BindableEvent');
 	};
 
@@ -5273,7 +5297,52 @@ function Fatality.new(Window: Window)
 		return Fatality.WindowFlags[Fatalitywin];
 	end;
 
+	function Fatal:InitConfigSystem(configName: string?, folder: string?)
+		local manager = self:AddConfig();
+		manager:Init(
+			configName or Window.ConfigName or Window.Name,
+			folder or Window.ConfigFolder or "Fatality"
+		);
+		self.ConfigManager = manager;
+		return manager;
+	end;
+
+	function Fatal:GetConfigManager()
+		return self.ConfigManager;
+	end;
+
+	function Fatal:SaveConfigByName(name: string)
+		assert(name and name ~= "", "Config name is empty");
+		local HttpService = game:GetService("HttpService");
+		local manager = self:InitConfigSystem();
+		local flags = self:GetFlagConfig();
+
+		flags.Info = {
+			Name = Window.ConfigName or Window.Name,
+			Folder = Window.ConfigFolder or "Fatality",
+			ConfigName = name,
+		};
+
+		manager:SaveConfig(name, HttpService:JSONEncode(flags));
+		manager:ReloadConfig();
+	end;
+
+	function Fatal:LoadConfigByName(name: string)
+		local manager = self:InitConfigSystem();
+		manager:LoadConfig(name);
+	end;
+
+	function Fatal:DeleteConfigByName(name: string)
+		local manager = self:InitConfigSystem();
+		manager:DeleteConfig(name);
+		manager:ReloadConfig();
+	end;
+
 	function Fatal:AddConfig()
+		if self.ConfigManager then
+			return self.ConfigManager;
+		end
+
 		local ConfigButton = Instance.new("ImageButton")
 
 		ConfigButton.Name = "ConfigButton"
@@ -5301,7 +5370,8 @@ function Fatality.new(Window: Window)
 			end;
 		end);
 
-		return Fatality:CreateConfigWindow(Fatalitywin,Fatal,ConfigButton);
+		self.ConfigManager = Fatality:CreateConfigWindow(Fatalitywin,Fatal,ConfigButton);
+		return self.ConfigManager;
 	end;
 
 	function Fatal:LoadConfig(config)
@@ -7024,6 +7094,12 @@ function Fatality.new(Window: Window)
 	end;
 
 	ToggleUI(true);
+
+	if Window.AutoConfig ~= false then
+		task.defer(function()
+			Fatal:InitConfigSystem(Window.ConfigName, Window.ConfigFolder);
+		end);
+	end
 
 	return Fatal;
 end;
