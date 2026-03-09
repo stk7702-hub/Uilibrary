@@ -4527,6 +4527,123 @@ function Fatality:CreateConfigWindow(Root: ScreenGui , Fatal , Button: ImageButt
 
 	local res;
 	res = Fatality:CreateResponse({
+		NormalizeConfigName = function(name)
+			name = tostring(name or "")
+			name = name:gsub("^%s+", "")
+			name = name:gsub("%s+$", "")
+			name = name:gsub("%.json$", "")
+			name = name:gsub("[<>:\"/\\|%?%*]", "_")
+			return name
+		end,
+
+		SanitizeToken = function(str)
+			str = tostring(str or "Fatality")
+			str = str:gsub("^%s+", "")
+			str = str:gsub("%s+$", "")
+			str = str:gsub("[<>:\"/\\|%?%*]", "_")
+			if str == "" then
+				str = "Fatality"
+			end
+			return str
+		end,
+
+		GetDatabasePath = function()
+			local folder = res:SanitizeToken(res.ConfigFolder or "Fatality")
+			local name = res:SanitizeToken(res.ConfigName or "Fatality")
+			return string.format("%s__%s__configs.json", folder, name)
+		end,
+
+		ReadDatabase = function()
+			local HttpService = game:GetService("HttpService")
+			local path = res:GetDatabasePath()
+
+			if not (isfile and readfile and writefile) then
+				warn("[Fatality Config] read/write APIs are unavailable")
+				return {
+					Configs = {}
+				}
+			end
+
+			local exists = false
+			local okIsFile, isFileResult = pcall(function()
+				return isfile(path)
+			end)
+			if okIsFile and isFileResult then
+				exists = true
+			end
+
+			if not exists then
+				local fresh = {
+					Configs = {}
+				}
+
+				local okEncode, encoded = pcall(function()
+					return HttpService:JSONEncode(fresh)
+				end)
+
+				if okEncode then
+					pcall(function()
+						writefile(path, encoded)
+					end)
+				end
+
+				return fresh
+			end
+
+			local okRead, content = pcall(function()
+				return readfile(path)
+			end)
+
+			if not okRead or type(content) ~= "string" or content == "" then
+				warn("[Fatality Config] readfile failed or returned empty content")
+				return {
+					Configs = {}
+				}
+			end
+
+			local okDecode, decoded = pcall(function()
+				return HttpService:JSONDecode(content)
+			end)
+
+			if not okDecode or typeof(decoded) ~= "table" then
+				warn("[Fatality Config] database decode failed, resetting database")
+				return {
+					Configs = {}
+				}
+			end
+
+			decoded.Configs = (typeof(decoded.Configs) == "table" and decoded.Configs) or {}
+			return decoded
+		end,
+
+		WriteDatabase = function(db)
+			local HttpService = game:GetService("HttpService")
+			local path = res:GetDatabasePath()
+
+			db = (typeof(db) == "table" and db) or {}
+			db.Configs = (typeof(db.Configs) == "table" and db.Configs) or {}
+
+			local okEncode, encoded = pcall(function()
+				return HttpService:JSONEncode(db)
+			end)
+
+			if not okEncode then
+				warn("[Fatality Config] database encode failed:", encoded)
+				return false
+			end
+
+			local okWrite, errWrite = pcall(function()
+				writefile(path, encoded)
+			end)
+
+			if not okWrite then
+				warn("[Fatality Config] write database failed:", errWrite)
+				return false
+			end
+
+			return true
+		end,
+
 		SetFiles = function(configs,bypass)
 			local OldLen = #Configs;
 
@@ -4572,113 +4689,81 @@ function Fatality:CreateConfigWindow(Root: ScreenGui , Fatal , Button: ImageButt
 		end,
 
 		ReloadConfig = function()
-			if not res.ConfigDirectory then
-				warn("[Fatality Config] Reload skipped: ConfigDirectory is nil")
-				return
+			local files = {}
+			local db = res:ReadDatabase()
+
+			for name, _ in pairs(db.Configs or {}) do
+				table.insert(files, tostring(name))
 			end
 
-			local files = {};
-
-			local ok, result = pcall(function()
-				return listfiles(res.ConfigDirectory)
+			table.sort(files, function(a,b)
+				return tostring(a):lower() < tostring(b):lower()
 			end)
-
-			if not ok then
-				warn("[Fatality Config] listfiles failed:", result)
-				return
-			end
-
-			for i,v in next , result do
-				local spl = (string.find(v,'/',1,true) and string.split(v,'/')) or (string.find(v,'\\',1,true) and string.split(v,'\\'));
-				local name = spl[#spl];
-
-				table.insert(files,name);
-			end;
 
 			res:SetFiles(files,true);
 			res:Refresh();
 		end,
 
 		DeleteConfig = function(name)
-			if not res.ConfigDirectory then
-				warn("[Fatality Config] Delete skipped: ConfigDirectory is nil")
-				return
-			end
+			name = res:NormalizeConfigName(name)
+			if name == "" then return end
 
-			local path = res.ConfigDirectory..'/'..tostring(name);
-
-			if isfile(path) then
-				local ok, err = pcall(function()
-					delfile(path)
-				end)
-				if not ok then
-					warn("[Fatality Config] delfile failed:", err)
-				end
-			end;
+			local db = res:ReadDatabase()
+			db.Configs[name] = nil
+			res:WriteDatabase(db)
 		end,
 
 		SaveConfig = function(name,content)
+			name = res:NormalizeConfigName(name)
+
+			if name == "" then
+				warn("[Fatality Config] empty config name")
+				return
+			end
+
 			if string.find(name,'/',1,true) or string.find(name,'\\',1,true) or string.find(name,':',1,true) then
 				return;	
 			end;
 
-			if not res.ConfigDirectory then
-				warn("[Fatality Config] Save skipped: ConfigDirectory is nil")
-				return
-			end
-
-			local path = res.ConfigDirectory..'/'..tostring(name);
-
-			local ok, err = pcall(function()
-				writefile(path , content);
-			end)
-
-			if not ok then
-				warn("[Fatality Config] writefile failed:", err)
-			end
+			local db = res:ReadDatabase()
+			db.Configs[name] = tostring(content)
+			res:WriteDatabase(db)
 		end,
 
 		LoadConfig = function(name)
-			if not res.ConfigDirectory then
-				warn("[Fatality Config] Load skipped: ConfigDirectory is nil")
+			name = res:NormalizeConfigName(name)
+			if name == "" then return end
+
+			local db = res:ReadDatabase()
+			local rawConfig = db.Configs[name]
+
+			if not rawConfig then
+				warn("[Fatality Config] config not found:", name)
 				return
 			end
 
-			local path = res.ConfigDirectory..'/'..tostring(name);
+			local okDecode, decoded = pcall(function()
+				return game:GetService('HttpService'):JSONDecode(rawConfig)
+			end)
 
-			if isfile(path) then
-				local okRead, fileData = pcall(function()
-					return readfile(path)
-				end)
+			if not okDecode then
+				warn("[Fatality Config] JSON decode failed:", decoded)
+				return
+			end
 
-				if not okRead then
-					warn("[Fatality Config] readfile failed:", fileData)
-					return
-				end
+			Fatal.Notifier:Notify({
+				Title = "Config",
+				Content = "Loaded config '"..tostring(name).."'",
+				Icon = "settings",
+				Duration = 4,
+			});
 
-				local okDecode, decoded = pcall(function()
-					return game:GetService('HttpService'):JSONDecode(fileData)
-				end)
-
-				if not okDecode then
-					warn("[Fatality Config] JSON decode failed:", decoded)
-					return
-				end
-
-				Fatal.Notifier:Notify({
-					Title = "Config",
-					Content = "Loaded config '"..tostring(name).."'",
-					Icon = "settings",
-					Duration = 4,
-				});
-
-				Fatal:LoadConfig(decoded);
-			end;
+			Fatal:LoadConfig(decoded);
 		end,
 
 		Init = function(Name: string,Folder: string)
-			Folder = Folder or "Fatality"
-			Name = Name or "Fatality"
+			Folder = res:SanitizeToken(Folder or "Fatality")
+			Name = res:SanitizeToken(Name or "Fatality")
 
 			if res.__initialized then
 				res:ReloadConfig();
@@ -4690,91 +4775,31 @@ function Fatality:CreateConfigWindow(Root: ScreenGui , Fatal , Button: ImageButt
 			end;
 
 			res.__initBusy = true;
-
-			local function normalizePath(path)
-				path = tostring(path or "")
-				path = path:gsub("\\","/")
-				path = path:gsub("/+","/")
-				path = path:gsub("^/+", "")
-				path = path:gsub("/+$", "")
-				return path
-			end
-
-			local function sanitizeName(str)
-				str = tostring(str or "Fatality")
-				str = str:gsub("[<>:\"/\\|%?%*]", "_")
-				str = str:gsub("^%s+", "")
-				str = str:gsub("%s+$", "")
-				if str == "" then
-					str = "Fatality"
-				end
-				return str
-			end
-
-			local function safeIsFolder(path)
-				local ok, result = pcall(function()
-					return isfolder(path)
-				end)
-				return ok and result or false
-			end
-
-			local function safeIsFile(path)
-				local ok, result = pcall(function()
-					return isfile(path)
-				end)
-				return ok and result or false
-			end
-
-			local function ensureFolder(path)
-				path = normalizePath(path)
-				if path == "" then
-					return false, "empty path"
-				end
-
-				local current = ""
-				for segment in string.gmatch(path, "[^/]+") do
-					current = (current == "" and segment) or (current .. "/" .. segment)
-
-					if safeIsFile(current) then
-						return false, "path is a file: " .. current
-					end
-
-					if not safeIsFolder(current) then
-						local okMake, errMake = pcall(function()
-							makefolder(current)
-						end)
-
-						if (not okMake) and not safeIsFolder(current) then
-							return false, errMake or ("failed to create directory: " .. current)
-						end
-					end
-				end
-
-				return true
-			end
-
-			Folder = normalizePath(Folder)
-			Name = sanitizeName(Name)
-
 			res.ConfigName = Name
 			res.ConfigFolder = Folder
+			res.ConfigDatabasePath = res:GetDatabasePath()
+			res.ConfigDirectory = res.ConfigDatabasePath
 
-			local cfgPath = Folder.."/Config/"..tostring(Name);
-			local okEnsure, errEnsure = ensureFolder(cfgPath)
+			local db = res:ReadDatabase()
+			local okWrite = res:WriteDatabase(db)
 
 			res.__initBusy = false;
 
-			if not okEnsure then
-				warn("[Fatality Config] Failed to initialize config folder:", errEnsure)
+			if not okWrite then
+				warn("[Fatality Config] Failed to initialize database file:", res.ConfigDatabasePath)
 				res.ConfigDirectory = nil
 				return
 			end
 
-			res.ConfigDirectory = cfgPath;
 			res.__initialized = true;
 
 			AddConfigButton.MouseButton1Click:Connect(function()
-				local configName = TextBox.Text;
+				local configName = res:NormalizeConfigName(TextBox.Text);
+
+				if configName == "" then
+					warn("[Fatality Config] empty config name")
+					return
+				end
 
 				if not configName:byte() then return end;
 
